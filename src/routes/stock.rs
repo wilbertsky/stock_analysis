@@ -299,3 +299,143 @@ pub async fn get_summary(
         peg,
     }))
 }
+
+// ── Piotroski F-Score ─────────────────────────────────────────────────────────
+
+#[utoipa::path(
+    get,
+    path = "/api/stock/{ticker}/piotroski",
+    tag = "stock",
+    params(("ticker" = String, Path, description = "Ticker symbol, e.g. AAPL")),
+    description = "Calculates the Piotroski F-Score (0–9), a nine-point accounting-based scoring \
+        system developed by Stanford professor Joseph Piotroski to identify financially strong companies. \
+        The score is built from three groups of signals: \
+        Profitability (F1–F4): positive ROA, positive operating cash flow, improving ROA year-over-year, \
+        and cash-backed earnings (operating cash flow > net income). \
+        Leverage & Liquidity (F5–F7): decreasing long-term leverage, improving current ratio, \
+        and no share dilution. \
+        Operating Efficiency (F8–F9): improving gross margin and improving asset turnover. \
+        Scores ≥7 indicate a financially healthy company. Scores ≤2 indicate potential distress. \
+        Originally validated on value stocks but widely applicable as a quality filter.",
+    responses(
+        (status = 200, description = "Piotroski F-Score with individual signal breakdown", body = PiotroskiResponse),
+        (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
+        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+    )
+)]
+pub async fn get_piotroski(
+    State(state): State<AppState>,
+    Path(ticker): Path<String>,
+) -> Result<Json<PiotroskiResponse>, AppError> {
+    let ticker = ticker.to_uppercase();
+    let (income, balance, cashflow) = tokio::try_join!(
+        state.fmp.income_statements(&ticker, 2),
+        state.fmp.balance_sheets(&ticker, 2),
+        state.fmp.cash_flow_statements(&ticker, 2),
+    )?;
+    Ok(Json(calculations::piotroski_f_score(&ticker, &income, &balance, &cashflow)))
+}
+
+// ── Dividend Metrics ──────────────────────────────────────────────────────────
+
+#[utoipa::path(
+    get,
+    path = "/api/stock/{ticker}/dividends",
+    tag = "stock",
+    params(("ticker" = String, Path, description = "Ticker symbol, e.g. AAPL")),
+    description = "Returns dividend health and sustainability metrics including yield, payout ratio, \
+        dividend per share, and 1-year dividend growth rate. \
+        The payout ratio (dividends paid ÷ net income) is key to sustainability: \
+        below 60% is generally considered safe; above 80% may indicate the company is \
+        returning more than it comfortably earns — a potential cut risk. \
+        In Rule #1 investing, dividends are a secondary signal — consistent and growing dividends \
+        can reinforce moat strength, but a high payout ratio at the expense of reinvestment \
+        may indicate slowing growth. The best dividend stocks grow their dividend every year \
+        while maintaining a healthy payout ratio.",
+    responses(
+        (status = 200, description = "Dividend yield, payout ratio, and sustainability assessment", body = DividendMetricsResponse),
+        (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
+        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+    )
+)]
+pub async fn get_dividends(
+    State(state): State<AppState>,
+    Path(ticker): Path<String>,
+) -> Result<Json<DividendMetricsResponse>, AppError> {
+    let ticker = ticker.to_uppercase();
+    // fetch_list_or_empty so non-dividend-paying tickers return empty vec, not 404
+    let ratios = state.fmp.ratios(&ticker, 2).await?;
+    Ok(Json(calculations::dividend_metrics(&ticker, &ratios)))
+}
+
+// ── Quality Score ─────────────────────────────────────────────────────────────
+
+#[utoipa::path(
+    get,
+    path = "/api/stock/{ticker}/quality",
+    tag = "stock",
+    params(("ticker" = String, Path, description = "Ticker symbol, e.g. AAPL")),
+    description = "Composite business quality score (0–100) assessing three pillars of durability: \
+        Gross margin (how much profit remains after cost of goods — high margins indicate pricing power \
+        and competitive moat; >40% is excellent, >30% is reasonable); \
+        Return on Equity — how efficiently the company earns returns for shareholders (>15% is strong); \
+        and Debt-to-Equity ratio (lower is safer; <0.5 is conservative, >2 is leveraged). \
+        High quality companies typically have wide margins, high ROE, and manageable debt — \
+        the classic combination that Rule #1 associates with durable competitive advantages ('moats'). \
+        Scoring: ROE contributes up to 35 points, gross margin up to 35 points plus 10 for improving trend, \
+        and low D/E up to 20 points.",
+    responses(
+        (status = 200, description = "Business quality assessment with composite score", body = QualityScoreResponse),
+        (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
+        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+    )
+)]
+pub async fn get_quality(
+    State(state): State<AppState>,
+    Path(ticker): Path<String>,
+) -> Result<Json<QualityScoreResponse>, AppError> {
+    let ticker = ticker.to_uppercase();
+    let (income, ratios, km) = tokio::try_join!(
+        state.fmp.income_statements(&ticker, 2),
+        state.fmp.ratios(&ticker, 2),
+        state.fmp.key_metrics(&ticker, 2),
+    )?;
+    Ok(Json(calculations::quality_score(&ticker, &income, &ratios, &km)))
+}
+
+// ── Momentum Score ────────────────────────────────────────────────────────────
+
+#[utoipa::path(
+    get,
+    path = "/api/stock/{ticker}/momentum",
+    tag = "stock",
+    params(("ticker" = String, Path, description = "Ticker symbol, e.g. AAPL")),
+    description = "Price momentum score (0–100) measuring how the stock has performed relative to \
+        the S&P 500 (SPY) over the past 3, 6, and 12 months. \
+        Momentum investing is grounded in decades of academic research showing that stocks which \
+        have recently outperformed tend to continue outperforming in the near term. \
+        Returns are calculated from daily closing prices: 3-month ≈ 63 trading days, \
+        6-month ≈ 126, 12-month ≈ 252. \
+        The relative strength for each period (stock return minus SPY return) is combined into \
+        a composite score starting at 50 (neutral). Outperforming SPY pushes the score above 50; \
+        underperforming pulls it below. Scores ≥65 indicate strong positive momentum; \
+        scores ≤40 indicate the stock is lagging the market. \
+        Used in factor investing alongside quality and value signals.",
+    responses(
+        (status = 200, description = "Momentum score with 3/6/12-month returns vs SPY", body = MomentumResponse),
+        (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
+        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+    )
+)]
+pub async fn get_momentum(
+    State(state): State<AppState>,
+    Path(ticker): Path<String>,
+) -> Result<Json<MomentumResponse>, AppError> {
+    let ticker = ticker.to_uppercase();
+    let (prices, spy_prices) = tokio::try_join!(
+        state.fmp.historical_prices(&ticker, 260),
+        state.fmp.historical_prices("SPY", 260),
+    )?;
+
+    Ok(Json(calculations::momentum_score(&ticker, &prices, &spy_prices)))
+}

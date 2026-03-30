@@ -13,7 +13,7 @@ impl FmpClient {
     pub fn new(api_key: String) -> Self {
         Self {
             client: Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(15))
                 .build()
                 .expect("Failed to build HTTP client"),
             api_key,
@@ -28,14 +28,40 @@ impl FmpClient {
         self.fetch_list(&format!("{BASE_URL}/income-statement"), ticker, limit).await
     }
 
-    /// Returns empty vec instead of NotFound — BVPS/FCF/PE may not be available on all plans.
+    pub async fn balance_sheets(
+        &self,
+        ticker: &str,
+        limit: u32,
+    ) -> Result<Vec<BalanceSheet>, AppError> {
+        self.fetch_list(&format!("{BASE_URL}/balance-sheet-statement"), ticker, limit).await
+    }
+
+    pub async fn cash_flow_statements(
+        &self,
+        ticker: &str,
+        limit: u32,
+    ) -> Result<Vec<CashFlowStatement>, AppError> {
+        self.fetch_list(&format!("{BASE_URL}/cash-flow-statement"), ticker, limit).await
+    }
+
+    /// Returns empty vec instead of NotFound — supplementary data may be absent on some plans.
     pub async fn ratios(&self, ticker: &str, limit: u32) -> Result<Vec<Ratio>, AppError> {
         self.fetch_list_or_empty(&format!("{BASE_URL}/ratios"), ticker, limit).await
     }
 
-    /// Returns empty vec instead of NotFound — ROIC may not be available on all plans.
+    /// Returns empty vec instead of NotFound — ROIC/ROE may be absent on some plans.
     pub async fn key_metrics(&self, ticker: &str, limit: u32) -> Result<Vec<KeyMetrics>, AppError> {
         self.fetch_list_or_empty(&format!("{BASE_URL}/key-metrics"), ticker, limit).await
+    }
+
+    /// Fetches daily closing prices, newest-first. limit=260 ≈ 1 trading year.
+    pub async fn historical_prices(
+        &self,
+        ticker: &str,
+        limit: u32,
+    ) -> Result<Vec<HistoricalPrice>, AppError> {
+        let url = format!("{BASE_URL}/historical-price-eod/light");
+        self.fetch_list(&url, ticker, limit).await
     }
 
     async fn fetch_list<T>(&self, url: &str, ticker: &str, limit: u32) -> Result<Vec<T>, AppError>
@@ -63,7 +89,6 @@ impl FmpClient {
         Ok(list)
     }
 
-    /// Same as fetch_list but returns Ok(vec![]) on empty instead of NotFound.
     async fn fetch_list_or_empty<T>(&self, url: &str, ticker: &str, limit: u32) -> Result<Vec<T>, AppError>
     where
         T: serde::de::DeserializeOwned,
@@ -75,36 +100,67 @@ impl FmpClient {
     }
 }
 
-// ── FMP deserialization types (internal) ────────────────────────────────────
+// ── FMP deserialization types ────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncomeStatement {
     pub date: String,
-    #[serde(default)]
-    pub revenue: Option<f64>,
-    #[serde(default)]
-    pub eps: Option<f64>,
+    #[serde(default)] pub revenue: Option<f64>,
+    #[serde(default)] pub gross_profit: Option<f64>,
+    #[serde(default)] pub net_income: Option<f64>,
+    #[serde(default)] pub eps: Option<f64>,
+    #[serde(default)] pub weighted_average_shs_out: Option<f64>,
 }
 
-/// From /stable/ratios — has per-share values and P/E.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BalanceSheet {
+    pub date: String,
+    #[serde(default)] pub total_assets: Option<f64>,
+    #[serde(default)] pub total_current_assets: Option<f64>,
+    #[serde(default)] pub total_current_liabilities: Option<f64>,
+    #[serde(default)] pub long_term_debt: Option<f64>,
+    #[serde(default)] pub total_equity: Option<f64>,
+    #[serde(default)] pub total_debt: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CashFlowStatement {
+    pub date: String,
+    #[serde(default)] pub operating_cash_flow: Option<f64>,
+    #[serde(default)] pub free_cash_flow: Option<f64>,
+    #[serde(default)] pub common_stock_issuance: Option<f64>,
+}
+
+/// From /stable/ratios — per-share values, P/E, and dividend metrics.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Ratio {
     pub date: String,
-    #[serde(default)]
-    pub book_value_per_share: Option<f64>,
-    #[serde(default)]
-    pub free_cash_flow_per_share: Option<f64>,
-    #[serde(default)]
-    pub price_to_earnings_ratio: Option<f64>,
+    #[serde(default)] pub book_value_per_share: Option<f64>,
+    #[serde(default)] pub free_cash_flow_per_share: Option<f64>,
+    #[serde(default)] pub price_to_earnings_ratio: Option<f64>,
+    #[serde(default)] pub dividend_yield_percentage: Option<f64>,
+    #[serde(default)] pub dividend_payout_ratio: Option<f64>,
+    #[serde(default)] pub dividend_per_share: Option<f64>,
+    #[serde(default)] pub debt_to_equity_ratio: Option<f64>,
 }
 
-/// From /stable/key-metrics — has ROIC.
+/// From /stable/key-metrics — ROIC and ROE.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyMetrics {
     pub date: String,
-    #[serde(default)]
-    pub return_on_invested_capital: Option<f64>,
+    #[serde(default)] pub return_on_invested_capital: Option<f64>,
+    #[serde(default)] pub return_on_equity: Option<f64>,
+}
+
+/// From /stable/historical-price-eod/light — daily closing prices, newest-first.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoricalPrice {
+    pub date: String,
+    #[serde(default)] pub price: Option<f64>,
 }

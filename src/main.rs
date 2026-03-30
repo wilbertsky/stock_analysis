@@ -3,6 +3,7 @@ mod error;
 mod fmp;
 mod models;
 mod routes;
+mod sectors;
 mod state;
 
 use utoipa::OpenApi;
@@ -27,6 +28,11 @@ use state::AppState;
         routes::stock::get_graham_number,
         routes::stock::get_peg,
         routes::stock::get_summary,
+        routes::stock::get_piotroski,
+        routes::stock::get_dividends,
+        routes::stock::get_quality,
+        routes::stock::get_momentum,
+        routes::screener::get_sector_top_picks,
     ),
     components(schemas(
         HealthResponse,
@@ -38,11 +44,18 @@ use state::AppState;
         GrahamNumberResponse,
         PegRatioResponse,
         SummaryResponse,
+        PiotroskiResponse,
+        DividendMetricsResponse,
+        QualityScoreResponse,
+        MomentumResponse,
+        ScreenerEntry,
+        SectorScreenerResponse,
         error::ErrorBody,
     )),
     tags(
         (name = "health", description = "Service health"),
         (name = "stock", description = "Stock valuation endpoints"),
+        (name = "screener", description = "Sector screener"),
     )
 )]
 struct ApiDoc;
@@ -71,6 +84,11 @@ async fn main() {
         .routes(routes!(routes::stock::get_graham_number))
         .routes(routes!(routes::stock::get_peg))
         .routes(routes!(routes::stock::get_summary))
+        .routes(routes!(routes::stock::get_piotroski))
+        .routes(routes!(routes::stock::get_dividends))
+        .routes(routes!(routes::stock::get_quality))
+        .routes(routes!(routes::stock::get_momentum))
+        .routes(routes!(routes::screener::get_sector_top_picks))
         .with_state(state)
         .split_for_parts();
 
