@@ -88,6 +88,7 @@ pub struct SummaryResponse {
     pub sticker_price: StickerPriceResponse,
     pub graham_number: GrahamNumberResponse,
     pub peg: PegRatioResponse,
+    pub momentum: MomentumResponse,
 }
 
 /// Health check response.

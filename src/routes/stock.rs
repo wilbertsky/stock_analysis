@@ -242,16 +242,17 @@ pub async fn get_peg(
     path = "/api/stock/{ticker}/summary",
     tag = "stock",
     params(("ticker" = String, Path, description = "Ticker symbol, e.g. AAPL")),
-    description = "Returns all available valuations in a single response: Big Five fundamentals, \
-        growth rates, Rule #1 sticker price, Graham Number, and PEG ratio. \
-        Use this endpoint to get a complete picture of a stock's health and estimated fair value \
-        without making multiple calls. \
+    description = "Returns a complete analysis in a single response: Big Five fundamentals, \
+        growth rates, Rule #1 sticker price, Graham Number, PEG ratio, and price momentum \
+        relative to the S&P 500. \
         How to read the summary: start with growth_rates to confirm the company consistently grows \
-        its Big Five metrics. Then compare the current market price against sticker_price \
-        (Rule #1 fair value), graham_number (conservative asset-based value), and the peg ratio \
-        (growth-adjusted valuation). A stock trading below both the margin of safety price and \
-        the Graham Number, with a PEG under 1.0 and strong Big Five growth, is a strong candidate \
-        for further due diligence.",
+        its Big Five metrics over time. Then compare the current market price against sticker_price \
+        (Rule #1 fair value) and graham_number (conservative asset-based value), and check the \
+        peg ratio for growth-adjusted valuation. Finally, review momentum to understand whether \
+        the market is currently rewarding or ignoring the stock relative to the S&P 500. \
+        A stock trading below both the margin of safety price and the Graham Number, with a PEG \
+        under 1.0, strong Big Five growth, and positive momentum, is a strong candidate for \
+        further due diligence.",
     responses(
         (status = 200, description = "Complete valuation summary", body = SummaryResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
@@ -264,7 +265,12 @@ pub async fn get_summary(
     Path(ticker): Path<String>,
 ) -> Result<Json<SummaryResponse>, AppError> {
     let ticker = ticker.to_uppercase();
-    let (years, latest_pe) = fetch_fundamentals(&state, &ticker).await?;
+
+    let ((years, latest_pe), prices, spy_prices) = tokio::try_join!(
+        fetch_fundamentals(&state, &ticker),
+        state.fmp.historical_prices(&ticker, 260),
+        state.fmp.historical_prices("SPY", 260),
+    )?;
 
     let growth = calculations::build_growth_rates(&ticker, &years);
     let latest = years.last().ok_or(AppError::NotFound)?;
@@ -287,6 +293,7 @@ pub async fn get_summary(
     let sticker = calculations::rule1_sticker_price(&ticker, eps, growth_rate, 0.15)?;
     let graham = calculations::graham_number(&ticker, eps, bvps)?;
     let peg = calculations::peg_ratio(&ticker, pe, growth_rate)?;
+    let momentum = calculations::momentum_score(&ticker, &prices, &spy_prices);
 
     let fundamentals = FundamentalsResponse { ticker: ticker.clone(), years };
 
@@ -297,6 +304,7 @@ pub async fn get_summary(
         sticker_price: sticker,
         graham_number: graham,
         peg,
+        momentum,
     }))
 }
 
