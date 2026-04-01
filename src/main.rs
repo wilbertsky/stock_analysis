@@ -6,6 +6,9 @@ mod routes;
 mod sectors;
 mod state;
 
+#[cfg(test)]
+mod route_tests;
+
 use utoipa::OpenApi;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use utoipa_swagger_ui::SwaggerUi;

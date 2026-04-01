@@ -459,3 +459,405 @@ pub fn peg_ratio(
         peg_ratio: pe_ratio / growth_pct,
     })
 }
+
+// ── Unit Tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        fmp::{BalanceSheet, CashFlowStatement, HistoricalPrice, IncomeStatement, KeyMetrics, Ratio},
+        models::FundamentalsYear,
+    };
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    fn income(revenue: f64, gross: f64, net: f64, eps: f64, shares: f64) -> IncomeStatement {
+        IncomeStatement {
+            date: "2024-01-01".to_owned(),
+            revenue: Some(revenue),
+            gross_profit: Some(gross),
+            net_income: Some(net),
+            eps: Some(eps),
+            weighted_average_shs_out: Some(shares),
+        }
+    }
+
+    fn balance(total_assets: f64, cur_assets: f64, cur_liab: f64, ltd: f64) -> BalanceSheet {
+        BalanceSheet {
+            date: "2024-01-01".to_owned(),
+            total_assets: Some(total_assets),
+            total_current_assets: Some(cur_assets),
+            total_current_liabilities: Some(cur_liab),
+            long_term_debt: Some(ltd),
+            total_equity: None,
+            total_debt: None,
+        }
+    }
+
+    fn cashflow(ocf: f64) -> CashFlowStatement {
+        CashFlowStatement {
+            date: "2024-01-01".to_owned(),
+            operating_cash_flow: Some(ocf),
+            free_cash_flow: None,
+            common_stock_issuance: None,
+        }
+    }
+
+    fn price(p: f64) -> HistoricalPrice {
+        HistoricalPrice { date: "2024-01-01".to_owned(), price: Some(p) }
+    }
+
+    fn ratio_full(div_yield: f64, payout: f64, dps: f64, de: f64) -> Ratio {
+        Ratio {
+            date: "2024-01-01".to_owned(),
+            book_value_per_share: None,
+            free_cash_flow_per_share: None,
+            price_to_earnings_ratio: None,
+            dividend_yield_percentage: Some(div_yield),
+            dividend_payout_ratio: Some(payout),
+            dividend_per_share: Some(dps),
+            debt_to_equity_ratio: Some(de),
+        }
+    }
+
+    fn year(eps: f64) -> FundamentalsYear {
+        FundamentalsYear {
+            fiscal_year: "2024".to_owned(),
+            revenue: Some(100.0),
+            eps: Some(eps),
+            book_value_per_share: None,
+            free_cash_flow_per_share: None,
+            roic: None,
+        }
+    }
+
+    /// Build a price vec of `len` entries (newest-first) where specific indices
+    /// have known values; all other entries use `fill`.
+    fn prices_with(len: usize, fill: f64, overrides: &[(usize, f64)]) -> Vec<HistoricalPrice> {
+        let mut v: Vec<HistoricalPrice> = (0..len).map(|_| price(fill)).collect();
+        for &(idx, val) in overrides {
+            if idx < len {
+                v[idx] = price(val);
+            }
+        }
+        v
+    }
+
+    // ── cagr ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cagr_doubles_in_one_year() {
+        assert!((cagr(100.0, 200.0, 1).unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cagr_known_ten_year_value() {
+        // 100 → 259.37 at 10% per year
+        let r = cagr(100.0, 259.374, 10).unwrap();
+        assert!((r - 0.10).abs() < 0.001);
+    }
+
+    #[test]
+    fn cagr_zero_start_returns_none() {
+        assert_eq!(cagr(0.0, 200.0, 5), None);
+    }
+
+    #[test]
+    fn cagr_negative_start_returns_none() {
+        assert_eq!(cagr(-50.0, 200.0, 5), None);
+    }
+
+    #[test]
+    fn cagr_zero_years_returns_none() {
+        assert_eq!(cagr(100.0, 200.0, 0), None);
+    }
+
+    // ── metric_cagr ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn metric_cagr_empty_all_none() {
+        let r = metric_cagr(&[]);
+        assert!(r.cagr_1yr.is_none() && r.cagr_5yr.is_none() && r.cagr_10yr.is_none());
+    }
+
+    #[test]
+    fn metric_cagr_single_element_all_none() {
+        let r = metric_cagr(&[Some(100.0)]);
+        assert!(r.cagr_1yr.is_none());
+    }
+
+    #[test]
+    fn metric_cagr_two_elements_gives_1yr_only() {
+        let r = metric_cagr(&[Some(100.0), Some(200.0)]);
+        assert!((r.cagr_1yr.unwrap() - 1.0).abs() < 1e-9);
+        assert!(r.cagr_5yr.is_none());
+        assert!(r.cagr_10yr.is_none());
+    }
+
+    #[test]
+    fn metric_cagr_none_at_endpoint_returns_none() {
+        // Last value is None → can't compute any CAGR
+        let r = metric_cagr(&[Some(100.0), None]);
+        assert!(r.cagr_1yr.is_none());
+    }
+
+    // ── growth_dcf_valuation ─────────────────────────────────────────────────
+
+    #[test]
+    fn dcf_negative_eps_errors() {
+        assert!(growth_dcf_valuation("T", -1.0, 0.15, 0.15).is_err());
+    }
+
+    #[test]
+    fn dcf_zero_eps_errors() {
+        assert!(growth_dcf_valuation("T", 0.0, 0.15, 0.15).is_err());
+    }
+
+    #[test]
+    fn dcf_caps_growth_at_25_percent() {
+        let r = growth_dcf_valuation("T", 5.0, 0.99, 0.15).unwrap();
+        assert!((r.growth_rate_used - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dcf_floors_growth_at_zero() {
+        let r = growth_dcf_valuation("T", 5.0, -0.10, 0.15).unwrap();
+        assert_eq!(r.growth_rate_used, 0.0);
+    }
+
+    #[test]
+    fn dcf_margin_of_safety_is_half_intrinsic() {
+        let r = growth_dcf_valuation("T", 5.0, 0.15, 0.15).unwrap();
+        assert!((r.margin_of_safety_price - r.estimated_intrinsic_value * 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dcf_pe_equals_two_times_growth_pct() {
+        // growth 15% → PE = 2 × 15 = 30
+        let r = growth_dcf_valuation("T", 5.0, 0.15, 0.15).unwrap();
+        assert!((r.pe_ratio_used - 30.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dcf_10pct_growth_discounted_at_10pct_equals_initial_pe_times_eps() {
+        // When growth_rate == discount_rate, future_price / (1+r)^10 = eps * pe_ratio
+        // because (1+g)^10 cancels with 1/(1+r)^10
+        let eps = 5.0;
+        let g = 0.10;
+        let r = growth_dcf_valuation("T", eps, g, g).unwrap();
+        let expected = eps * r.pe_ratio_used; // 5 * 20 = 100
+        assert!((r.estimated_intrinsic_value - expected).abs() < 0.01);
+    }
+
+    // ── graham_number ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn graham_number_known_value() {
+        // sqrt(22.5 × 4 × 25) = sqrt(2250) ≈ 47.43
+        let r = graham_number("T", 4.0, 25.0).unwrap();
+        assert!((r.graham_number - (22.5 * 4.0 * 25.0_f64).sqrt()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn graham_number_negative_eps_errors() {
+        assert!(graham_number("T", -1.0, 25.0).is_err());
+    }
+
+    #[test]
+    fn graham_number_zero_bvps_errors() {
+        assert!(graham_number("T", 4.0, 0.0).is_err());
+    }
+
+    // ── peg_ratio ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn peg_ratio_known_value() {
+        // P/E 30 ÷ 15% growth = 2.0
+        let r = peg_ratio("T", 30.0, 0.15).unwrap();
+        assert!((r.peg_ratio - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn peg_ratio_zero_growth_errors() {
+        assert!(peg_ratio("T", 30.0, 0.0).is_err());
+    }
+
+    #[test]
+    fn peg_ratio_negative_growth_errors() {
+        assert!(peg_ratio("T", 30.0, -0.05).is_err());
+    }
+
+    // ── piotroski_f_score ─────────────────────────────────────────────────────
+
+    #[test]
+    fn piotroski_all_nine_signals_pass() {
+        //  cur year: higher margins, higher asset turnover, fewer shares, lower leverage,
+        //            better current ratio, positive OCF > NI
+        let inc = vec![
+            income(200.0, 100.0, 20.0, 2.0, 9.0),  // current
+            income(150.0,  60.0, 15.0, 1.5, 10.0), // prior
+        ];
+        let bal = vec![
+            balance(100.0, 60.0, 30.0, 10.0), // LTD/assets = 0.10, CR = 2.0
+            balance(90.0,  40.0, 30.0, 20.0), // LTD/assets = 0.22, CR = 1.33
+        ];
+        let cf = vec![cashflow(30.0)]; // OCF(30) > NI(20) ✓
+
+        let r = piotroski_f_score("T", &inc, &bal, &cf);
+        assert_eq!(r.score, 9);
+        assert_eq!(r.interpretation.to_lowercase().contains("strong"), true);
+    }
+
+    #[test]
+    fn piotroski_all_nine_signals_fail() {
+        let inc = vec![
+            income(100.0, 30.0, -5.0, -0.5, 12.0), // current: loss, diluted
+            income(150.0, 60.0, 10.0,  1.0, 10.0), // prior: better on all
+        ];
+        let bal = vec![
+            balance(100.0, 20.0, 40.0, 50.0), // worse leverage, worse CR
+            balance(100.0, 40.0, 30.0, 30.0),
+        ];
+        let cf = vec![cashflow(-10.0)]; // negative OCF
+
+        let r = piotroski_f_score("T", &inc, &bal, &cf);
+        assert_eq!(r.score, 0);
+    }
+
+    #[test]
+    fn piotroski_empty_slices_return_zero() {
+        let r = piotroski_f_score("T", &[], &[], &[]);
+        assert_eq!(r.score, 0);
+    }
+
+    // ── dividend_metrics ──────────────────────────────────────────────────────
+
+    #[test]
+    fn dividends_no_dividend_paid() {
+        let ratios = vec![{
+            let mut r = ratio_full(0.0, 0.0, 0.0, 1.5);
+            r.dividend_per_share = Some(0.0);
+            r
+        }];
+        let r = dividend_metrics("T", &ratios);
+        assert!(r.is_sustainable.is_none() || r.dividend_per_share == Some(0.0));
+    }
+
+    #[test]
+    fn dividends_sustainable_payout() {
+        let ratios = vec![ratio_full(2.5, 0.40, 1.00, 0.5)];
+        let r = dividend_metrics("T", &ratios);
+        assert_eq!(r.is_sustainable, Some(true));
+        assert_eq!(r.dividend_yield_pct, Some(2.5));
+    }
+
+    #[test]
+    fn dividends_unsustainable_payout() {
+        let ratios = vec![ratio_full(8.0, 0.90, 2.00, 2.0)];
+        let r = dividend_metrics("T", &ratios);
+        assert_eq!(r.is_sustainable, Some(false));
+    }
+
+    #[test]
+    fn dividends_growth_rate_calculated() {
+        let ratios = vec![
+            ratio_full(2.5, 0.40, 1.10, 0.5), // current
+            ratio_full(2.3, 0.38, 1.00, 0.5), // prior
+        ];
+        let r = dividend_metrics("T", &ratios);
+        assert!(r.dividend_growth_rate_1yr.is_some());
+        assert!(r.dividend_growth_rate_1yr.unwrap() > 0.0); // growing
+    }
+
+    // ── quality_score ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn quality_high_score_for_strong_company() {
+        let inc = vec![
+            income(100.0, 60.0, 25.0, 2.5, 10.0), // 60% gross margin
+            income(90.0,  50.0, 20.0, 2.0, 10.0),
+        ];
+        let ratios = vec![ratio_full(1.5, 0.3, 0.5, 0.3)]; // low D/E
+        let km = vec![KeyMetrics {
+            date: "2024-01-01".to_owned(),
+            return_on_invested_capital: None,
+            return_on_equity: Some(0.25), // 25% ROE
+        }];
+        let r = quality_score("T", &inc, &ratios, &km);
+        assert!(r.quality_score >= 70.0);
+        assert_eq!(r.gross_margin_trend.as_deref(), Some("improving"));
+    }
+
+    #[test]
+    fn quality_low_score_for_weak_company() {
+        let inc = vec![income(100.0, 10.0, -5.0, -0.5, 10.0)]; // 10% margin, loss
+        let ratios = vec![ratio_full(0.0, 0.0, 0.0, 5.0)]; // very high D/E
+        let km = vec![KeyMetrics {
+            date: "2024-01-01".to_owned(),
+            return_on_invested_capital: None,
+            return_on_equity: Some(-0.05), // negative ROE
+        }];
+        let r = quality_score("T", &inc, &ratios, &km);
+        assert!(r.quality_score < 45.0);
+    }
+
+    // ── momentum_score ────────────────────────────────────────────────────────
+
+    #[test]
+    fn momentum_insufficient_data_stays_neutral() {
+        let p = vec![price(100.0)];
+        let spy = vec![price(400.0)];
+        let r = momentum_score("T", &p, &spy);
+        assert!((r.momentum_score - 50.0).abs() < 1e-9);
+        assert!(r.return_3m.is_none() && r.return_6m.is_none() && r.return_12m.is_none());
+    }
+
+    #[test]
+    fn momentum_outperforming_spy_scores_above_50() {
+        // Stock: 160→220 (+37.5%); SPY: 430→500 (+16.3%)
+        let stock = prices_with(260, 220.0, &[(63, 200.0), (126, 180.0), (252, 160.0)]);
+        let spy   = prices_with(260, 500.0, &[(63, 480.0), (126, 460.0), (252, 430.0)]);
+        let r = momentum_score("T", &stock, &spy);
+        assert!(r.momentum_score > 50.0);
+        assert!(r.relative_strength_12m.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn momentum_underperforming_spy_scores_below_50() {
+        // Stock flat; SPY up significantly
+        let stock = prices_with(260, 100.0, &[(63, 100.0), (126, 100.0), (252, 100.0)]);
+        let spy   = prices_with(260, 500.0, &[(63, 430.0), (126, 400.0), (252, 350.0)]);
+        let r = momentum_score("T", &stock, &spy);
+        assert!(r.momentum_score < 50.0);
+    }
+
+    // ── value_signal ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn value_signal_very_cheap_price_returns_100() {
+        // Two years of EPS data gives a 1yr CAGR; price far below MOS
+        let years = vec![year(4.0), year(5.0)];
+        assert_eq!(value_signal("T", &years, 1.0), 100.0);
+    }
+
+    #[test]
+    fn value_signal_no_eps_returns_zero() {
+        let years = vec![FundamentalsYear {
+            fiscal_year: "2024".to_owned(),
+            revenue: Some(100.0),
+            eps: None,
+            book_value_per_share: None,
+            free_cash_flow_per_share: None,
+            roic: None,
+        }];
+        assert_eq!(value_signal("T", &years, 100.0), 0.0);
+    }
+
+    #[test]
+    fn value_signal_overvalued_returns_zero() {
+        // Extremely high price relative to any reasonable DCF output
+        let years = vec![year(4.0), year(5.0)];
+        assert_eq!(value_signal("T", &years, 1_000_000.0), 0.0);
+    }
+}

@@ -2,21 +2,28 @@ use reqwest::Client;
 use serde::Deserialize;
 use crate::error::AppError;
 
-const BASE_URL: &str = "https://financialmodelingprep.com/stable";
+const DEFAULT_BASE_URL: &str = "https://financialmodelingprep.com/stable";
 
 pub struct FmpClient {
     client: Client,
     api_key: String,
+    base_url: String,
 }
 
 impl FmpClient {
     pub fn new(api_key: String) -> Self {
+        Self::with_base_url(api_key, DEFAULT_BASE_URL.to_owned())
+    }
+
+    /// Alternate constructor — primarily for tests that point at a mock HTTP server.
+    pub fn with_base_url(api_key: String, base_url: String) -> Self {
         Self {
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
                 .build()
                 .expect("Failed to build HTTP client"),
             api_key,
+            base_url,
         }
     }
 
@@ -25,7 +32,7 @@ impl FmpClient {
         ticker: &str,
         limit: u32,
     ) -> Result<Vec<IncomeStatement>, AppError> {
-        self.fetch_list(&format!("{BASE_URL}/income-statement"), ticker, limit).await
+        self.fetch_list(&format!("{}/income-statement", self.base_url), ticker, limit).await
     }
 
     pub async fn balance_sheets(
@@ -33,7 +40,7 @@ impl FmpClient {
         ticker: &str,
         limit: u32,
     ) -> Result<Vec<BalanceSheet>, AppError> {
-        self.fetch_list(&format!("{BASE_URL}/balance-sheet-statement"), ticker, limit).await
+        self.fetch_list(&format!("{}/balance-sheet-statement", self.base_url), ticker, limit).await
     }
 
     pub async fn cash_flow_statements(
@@ -41,17 +48,17 @@ impl FmpClient {
         ticker: &str,
         limit: u32,
     ) -> Result<Vec<CashFlowStatement>, AppError> {
-        self.fetch_list(&format!("{BASE_URL}/cash-flow-statement"), ticker, limit).await
+        self.fetch_list(&format!("{}/cash-flow-statement", self.base_url), ticker, limit).await
     }
 
     /// Returns empty vec instead of NotFound — supplementary data may be absent on some plans.
     pub async fn ratios(&self, ticker: &str, limit: u32) -> Result<Vec<Ratio>, AppError> {
-        self.fetch_list_or_empty(&format!("{BASE_URL}/ratios"), ticker, limit).await
+        self.fetch_list_or_empty(&format!("{}/ratios", self.base_url), ticker, limit).await
     }
 
     /// Returns empty vec instead of NotFound — ROIC/ROE may be absent on some plans.
     pub async fn key_metrics(&self, ticker: &str, limit: u32) -> Result<Vec<KeyMetrics>, AppError> {
-        self.fetch_list_or_empty(&format!("{BASE_URL}/key-metrics"), ticker, limit).await
+        self.fetch_list_or_empty(&format!("{}/key-metrics", self.base_url), ticker, limit).await
     }
 
     /// Fetches daily closing prices, newest-first. limit=260 ≈ 1 trading year.
@@ -60,8 +67,7 @@ impl FmpClient {
         ticker: &str,
         limit: u32,
     ) -> Result<Vec<HistoricalPrice>, AppError> {
-        let url = format!("{BASE_URL}/historical-price-eod/light");
-        self.fetch_list(&url, ticker, limit).await
+        self.fetch_list(&format!("{}/historical-price-eod/light", self.base_url), ticker, limit).await
     }
 
     async fn fetch_list<T>(&self, url: &str, ticker: &str, limit: u32) -> Result<Vec<T>, AppError>
