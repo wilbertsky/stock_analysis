@@ -14,6 +14,11 @@ use crate::{
     state::AppState,
 };
 
+const DISCLAIMER: &str = "Scores are calculated from publicly available financial data for \
+    educational purposes only. They do not constitute investment advice, a recommendation to \
+    buy or sell any security, or a guarantee of future performance. Always conduct your own \
+    research and consult a licensed financial advisor before making investment decisions.";
+
 #[utoipa::path(
     get,
     path = "/api/screener/{sector}",
@@ -28,9 +33,12 @@ use crate::{
         Momentum (20%) — relative price performance vs. the S&P 500 over 3/6/12 months. \
         Supported sectors: technology, healthcare, financials, energy, consumer-staples, \
         consumer-discretionary, industrials, materials, real-estate, communication, utilities. \
-        Each sector screens 10 representative large-cap stocks. Stocks for which data is \
-        unavailable are omitted from results. Expect this endpoint to take 10–20 seconds \
-        as it fetches data for multiple tickers concurrently.",
+        Each sector screens 10 representative large-cap stocks. Results include a score_tier \
+        label (High / Above Average / Average / Below Average) based on the composite score — \
+        this is an educational grouping, not an investment recommendation. \
+        Stocks for which data is unavailable are omitted from results. \
+        Expect this endpoint to take 10–20 seconds as it fetches data for multiple tickers concurrently. \
+        A disclaimer field is included in every response.",
     responses(
         (status = 200, description = "Ranked stock picks for the sector", body = SectorScreenerResponse),
         (status = 422, description = "Unknown sector name", body = crate::error::ErrorBody),
@@ -86,6 +94,7 @@ pub async fn get_sector_top_picks(
         sector,
         stocks_analyzed,
         results,
+        disclaimer: DISCLAIMER.to_owned(),
     }))
 }
 
@@ -151,14 +160,14 @@ async fn score_ticker(
         + val_signal * 0.25
         + momentum_score * 0.20;
 
-    let signal = if composite_score >= 70.0 {
-        "Strong Buy".to_owned()
+    let score_tier = if composite_score >= 70.0 {
+        "High".to_owned()
     } else if composite_score >= 55.0 {
-        "Buy".to_owned()
+        "Above Average".to_owned()
     } else if composite_score >= 40.0 {
-        "Hold".to_owned()
+        "Average".to_owned()
     } else {
-        "Avoid".to_owned()
+        "Below Average".to_owned()
     };
 
     Some(ScreenerEntry {
@@ -168,6 +177,6 @@ async fn score_ticker(
         momentum_score,
         value_signal: val_signal,
         composite_score,
-        signal,
+        score_tier,
     })
 }

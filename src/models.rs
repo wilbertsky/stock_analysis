@@ -189,18 +189,23 @@ pub struct ScreenerEntry {
     pub piotroski_score: u8,
     pub quality_score: f64,
     pub momentum_score: f64,
-    /// Rule #1 value signal: 100 = below MOS, 50 = below sticker, 25 = within 1.5× sticker, 0 = overvalued
+    /// DCF value signal: 100 = below margin of safety, 50 = below intrinsic value,
+    /// 25 = within 1.5× intrinsic value, 0 = above 1.5× intrinsic value
     pub value_signal: f64,
     /// Weighted composite: piotroski 30% + quality 25% + value 25% + momentum 20%
     pub composite_score: f64,
-    pub signal: String,
+    /// Relative score tier based on composite_score. For educational use only — not a
+    /// recommendation to buy or sell.
+    pub score_tier: String,
 }
 
-/// Ranked stock picks for a sector based on composite scoring.
+/// Ranked sector screener results based on composite scoring.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SectorScreenerResponse {
     pub sector: String,
     pub stocks_analyzed: usize,
     /// Sorted by composite_score descending
     pub results: Vec<ScreenerEntry>,
+    /// Educational disclaimer — scores are not investment advice
+    pub disclaimer: String,
 }

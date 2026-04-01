@@ -18,7 +18,13 @@ use state::AppState;
     info(
         title = "Stock Analysis API",
         version = "0.1.0",
-        description = "DCF intrinsic value, Graham Number, PEG ratio, and core fundamental metrics via FMP."
+        description = "Quantitative stock analysis using publicly available financial data: \
+            DCF intrinsic value, Graham Number, PEG ratio, Piotroski F-Score, quality scoring, \
+            momentum, and a sector screener — all powered by FMP.\n\n\
+            **Disclaimer:** All scores and outputs are provided for educational purposes only. \
+            They do not constitute investment advice, a recommendation to buy or sell any security, \
+            or a guarantee of future performance. Always conduct your own research and consult a \
+            licensed financial advisor before making investment decisions."
     ),
     paths(
         routes::health_check,

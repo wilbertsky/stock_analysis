@@ -117,9 +117,9 @@ Ranks stocks within a sector using a weighted composite of all four factor score
 - **DCF Value Signal** — 25% (how current price compares to intrinsic value and margin of safety price)
 - **Momentum Score** — 20%
 
-## A Note on Signal Interpretation
+## A Note on Score Interpretation
 
-The screener signals (Strong Buy, Buy, Hold, Avoid) reflect relative scoring within this model — they are a starting point for research, not a recommendation to buy or sell. A high composite score means a stock performs well across multiple quality and value dimensions compared to its sector peers. It does not guarantee future returns.
+The screener returns a `score_tier` label (High, Above Average, Average, Below Average) based on the composite score. This is an educational grouping reflecting how a stock ranks quantitatively within its sector peers — it is not a recommendation to buy or sell. A high composite score means a stock performs well across multiple quality and value dimensions. It does not guarantee future returns.
 
 Key limitations to keep in mind:
 
@@ -129,6 +129,10 @@ Key limitations to keep in mind:
 - **No sector normalization** — Score thresholds are not adjusted for industry norms. A 30% gross margin means something very different for a retailer versus a software company.
 
 Use these scores to build a shortlist of companies worth deeper investigation — not as a substitute for understanding the business.
+
+## Disclaimer
+
+All scores and outputs provided by this API are for **educational purposes only**. They do not constitute investment advice, a recommendation to buy or sell any security, or a guarantee of future performance. Quantitative scores are based on publicly available historical financial data and make no prediction about future stock prices or returns. Always conduct your own research and consult a licensed financial advisor before making investment decisions.
 
 ## Notes
 
