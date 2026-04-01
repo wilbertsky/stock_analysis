@@ -23,8 +23,8 @@ use crate::{
         weighted composite score that combines four factor investing signals: \
         Piotroski F-Score (30%) — accounting-based quality; \
         Business Quality (25%) — gross margin, ROE, and debt levels; \
-        Rule #1 Value Signal (25%) — how the current price compares to the calculated sticker price \
-        and margin of safety price; \
+        DCF Value Signal (25%) — how the current price compares to the calculated intrinsic value \
+        and margin of safety price (Benjamin Graham); \
         Momentum (20%) — relative price performance vs. the S&P 500 over 3/6/12 months. \
         Supported sectors: technology, healthcare, financials, energy, consumer-staples, \
         consumer-discretionary, industrials, materials, real-estate, communication, utilities. \

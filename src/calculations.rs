@@ -3,8 +3,8 @@ use crate::{
     fmp::{BalanceSheet, CashFlowStatement, HistoricalPrice, IncomeStatement, Ratio, KeyMetrics},
     models::{
         DividendMetricsResponse, FundamentalsYear, GrahamNumberResponse, GrowthRatesResponse,
-        MetricCagr, MomentumResponse, PegRatioResponse, PiotroskiResponse, QualityScoreResponse,
-        StickerPriceResponse,
+        IntrinsicValueResponse, MetricCagr, MomentumResponse, PegRatioResponse, PiotroskiResponse,
+        QualityScoreResponse,
     },
 };
 
@@ -35,7 +35,7 @@ pub fn metric_cagr(values: &[Option<f64>]) -> MetricCagr {
     }
 }
 
-/// Build growth rates for all Big Five metrics from a fundamentals series.
+/// Build growth rates for all core fundamental metrics from a fundamentals series.
 pub fn build_growth_rates(ticker: &str, years: &[FundamentalsYear]) -> GrowthRatesResponse {
     let collect = |f: fn(&FundamentalsYear) -> Option<f64>| -> Vec<Option<f64>> {
         years.iter().map(f).collect()
@@ -51,34 +51,36 @@ pub fn build_growth_rates(ticker: &str, years: &[FundamentalsYear]) -> GrowthRat
     }
 }
 
-/// Rule #1 Phil Town sticker price.
+/// Simplified DCF intrinsic value estimate.
+/// Projects EPS 10 years forward, applies a growth-adjusted P/E (2 × growth rate%),
+/// then discounts back at the required rate of return.
 /// growth_rate: annual EPS CAGR (decimal, e.g. 0.15 for 15%), capped at 25%.
-/// discount_rate: minimum acceptable rate of return (typically 0.15).
-pub fn rule1_sticker_price(
+/// discount_rate: minimum required rate of return (typically 0.15).
+pub fn growth_dcf_valuation(
     ticker: &str,
     current_eps: f64,
     growth_rate: f64,
     discount_rate: f64,
-) -> Result<StickerPriceResponse, AppError> {
+) -> Result<IntrinsicValueResponse, AppError> {
     if current_eps <= 0.0 {
         return Err(AppError::Unprocessable(
-            "Cannot compute sticker price: EPS is zero or negative".into(),
+            "Cannot compute intrinsic value: EPS is zero or negative".into(),
         ));
     }
     let growth_rate = growth_rate.min(0.25).max(0.0);
-    let pe_ratio_used = growth_rate * 100.0 * 2.0; // Rule #1: P/E = 2 × growth%
+    let pe_ratio_used = growth_rate * 100.0 * 2.0; // growth-adjusted P/E: 2 × growth rate%
     let future_eps = current_eps * (1.0 + growth_rate).powi(10);
     let future_price = future_eps * pe_ratio_used;
-    let sticker_price = future_price / (1.0 + discount_rate).powi(10);
+    let intrinsic_value = future_price / (1.0 + discount_rate).powi(10);
 
-    Ok(StickerPriceResponse {
+    Ok(IntrinsicValueResponse {
         ticker: ticker.to_owned(),
         growth_rate_used: growth_rate,
         pe_ratio_used,
         future_eps,
         future_price,
-        estimated_current_sticker_price: sticker_price,
-        margin_of_safety_price: sticker_price * 0.5,
+        estimated_intrinsic_value: intrinsic_value,
+        margin_of_safety_price: intrinsic_value * 0.5,
     })
 }
 
@@ -414,8 +416,9 @@ pub fn momentum_score(
 
 // ── Value Signal (screener helper) ────────────────────────────────────────────
 
-/// Rule #1 value signal for the screener.
-/// Returns 100 if price ≤ MOS, 50 if ≤ sticker, 25 if ≤ 1.5× sticker, else 0.
+/// DCF value signal for the screener.
+/// Returns 100 if price ≤ margin of safety, 50 if ≤ intrinsic value,
+/// 25 if ≤ 1.5× intrinsic value, else 0.
 pub fn value_signal(ticker: &str, years: &[FundamentalsYear], current_price: f64) -> f64 {
     let growth = build_growth_rates(ticker, years);
     let growth_rate = match growth.eps.cagr_5yr.or(growth.eps.cagr_1yr) {
@@ -426,11 +429,11 @@ pub fn value_signal(ticker: &str, years: &[FundamentalsYear], current_price: f64
         Some(e) if e > 0.0 => e,
         _ => return 0.0,
     };
-    match rule1_sticker_price(ticker, eps, growth_rate, 0.15) {
-        Ok(sp) => {
-            if current_price <= sp.margin_of_safety_price { 100.0 }
-            else if current_price <= sp.estimated_current_sticker_price { 50.0 }
-            else if current_price <= sp.estimated_current_sticker_price * 1.5 { 25.0 }
+    match growth_dcf_valuation(ticker, eps, growth_rate, 0.15) {
+        Ok(iv) => {
+            if current_price <= iv.margin_of_safety_price { 100.0 }
+            else if current_price <= iv.estimated_intrinsic_value { 50.0 }
+            else if current_price <= iv.estimated_intrinsic_value * 1.5 { 25.0 }
             else { 0.0 }
         }
         Err(_) => 0.0,

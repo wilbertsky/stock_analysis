@@ -4,9 +4,9 @@ A REST API built in Rust with [Axum](https://github.com/tokio-rs/axum) that prov
 
 ## Features
 
-- **Big Five Fundamentals** — Revenue, EPS, Book Value/Share, Free Cash Flow/Share, and ROIC over up to 5 years
-- **Growth Rates** — Compound Annual Growth Rate (CAGR) for each Big Five metric
-- **Rule #1 Sticker Price** — Phil Town's fair value estimate with margin of safety (50% discount)
+- **Core Fundamental Metrics** — Revenue, EPS, Book Value/Share, Free Cash Flow/Share, and ROIC over up to 5 years
+- **Growth Rates** — Compound Annual Growth Rate (CAGR) for each fundamental metric
+- **Intrinsic Value (DCF)** — Growth-adjusted discounted cash flow estimate with margin of safety (50% discount)
 - **Graham Number** — Benjamin Graham's intrinsic value formula: √(22.5 × EPS × BVPS)
 - **PEG Ratio** — Peter Lynch's growth-adjusted valuation ratio
 - **Piotroski F-Score** — Nine-signal accounting quality score (0–9)
@@ -50,9 +50,9 @@ Visit `http://localhost:8080/swagger-ui` to explore and test all endpoints inter
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/health` | Service health check |
-| `GET` | `/api/stock/{ticker}/fundamentals` | Big Five raw data, up to 5 years |
-| `GET` | `/api/stock/{ticker}/growth-rates` | CAGR for each Big Five metric |
-| `GET` | `/api/stock/{ticker}/rule-number-one` | Rule #1 sticker price and margin of safety |
+| `GET` | `/api/stock/{ticker}/fundamentals` | Core fundamental metrics, up to 5 years |
+| `GET` | `/api/stock/{ticker}/growth-rates` | CAGR for each fundamental metric |
+| `GET` | `/api/stock/{ticker}/intrinsic-value` | DCF intrinsic value estimate and margin of safety |
 | `GET` | `/api/stock/{ticker}/graham-number` | Graham Number intrinsic value |
 | `GET` | `/api/stock/{ticker}/peg` | PEG ratio |
 | `GET` | `/api/stock/{ticker}/piotroski` | Piotroski F-Score with all 9 signals |
@@ -77,6 +77,9 @@ Each sector screens 10 representative large-cap stocks and ranks them by a weigh
 # Full analysis for a single stock
 curl http://localhost:8080/api/stock/AAPL/summary
 
+# DCF intrinsic value estimate
+curl http://localhost:8080/api/stock/AAPL/intrinsic-value
+
 # Piotroski F-Score
 curl http://localhost:8080/api/stock/MSFT/piotroski
 
@@ -89,8 +92,8 @@ curl http://localhost:8080/api/screener/technology
 
 ## Analysis Methods
 
-### Rule #1 (Phil Town)
-Projects EPS 10 years forward using historical CAGR, applies a default P/E of 2× the growth rate, then discounts back to today at a 15% minimum acceptable rate of return. The margin of safety price is 50% of the sticker price — the target buy price.
+### Intrinsic Value — Simplified DCF
+Projects EPS 10 years forward using the historical EPS CAGR, applies a growth-adjusted P/E of 2× the growth rate percentage, then discounts back to today at a 15% minimum required rate of return. This approach is rooted in standard discounted cash flow theory as practiced by Benjamin Graham and Warren Buffett. The margin of safety price is 50% of the intrinsic value estimate — a concept introduced by Graham to account for uncertainty in any projection.
 
 ### Graham Number (Benjamin Graham)
 Conservative intrinsic value estimate based purely on earnings and book value: `√(22.5 × EPS × BVPS)`. Works best for stable, asset-heavy companies.
@@ -102,7 +105,7 @@ Adjusts the P/E ratio for growth: `P/E ÷ EPS growth rate %`. Below 1.0 may indi
 Nine binary signals across three groups — profitability (F1–F4), leverage and liquidity (F5–F7), and operating efficiency (F8–F9). Scores ≥7 indicate a financially strong company; scores ≤2 indicate potential distress.
 
 ### Quality Score
-Composite 0–100 score based on gross margin (pricing power), return on equity (capital efficiency), and debt-to-equity (financial risk). High-quality companies typically have wide margins, high ROE, and manageable debt — the combination Rule #1 associates with a durable competitive advantage.
+Composite 0–100 score based on gross margin (pricing power), return on equity (capital efficiency), and debt-to-equity (financial risk). High-quality companies typically have wide margins, high ROE, and manageable debt — the combination most associated with durable competitive advantage.
 
 ### Momentum Score
 Measures 3-month, 6-month, and 12-month price returns relative to the S&P 500 (SPY). Score starts at 50 (neutral) and shifts up for outperformance or down for underperformance across each period. Grounded in decades of academic research showing that recent outperformers tend to continue outperforming near-term.
@@ -111,7 +114,7 @@ Measures 3-month, 6-month, and 12-month price returns relative to the S&P 500 (S
 Ranks stocks within a sector using a weighted composite of all four factor scores:
 - **Piotroski F-Score** — 30%
 - **Quality Score** — 25%
-- **Rule #1 Value Signal** — 25% (how current price compares to sticker and margin of safety prices)
+- **DCF Value Signal** — 25% (how current price compares to intrinsic value and margin of safety price)
 - **Momentum Score** — 20%
 
 ## A Note on Signal Interpretation
@@ -121,7 +124,7 @@ The screener signals (Strong Buy, Buy, Hold, Avoid) reflect relative scoring wit
 Key limitations to keep in mind:
 
 - **Data depth** — The free FMP tier provides 5 years of history. CAGR calculations and trend analysis are more reliable with 10+ years of data.
-- **No moat analysis** — Rule #1 investing emphasizes understanding *why* a company has a durable competitive advantage (brand, switching costs, network effects). That qualitative judgement cannot be captured in financial ratios alone.
+- **No moat analysis** — Quantitative scores cannot capture *why* a company has a durable competitive advantage (brand, switching costs, network effects, cost structure). That qualitative judgement requires reading the business, not just the numbers.
 - **Weights are not backtested** — The composite scoring weights are reasonable based on factor investing research, but have not been validated against historical returns for this specific combination.
 - **No sector normalization** — Score thresholds are not adjusted for industry norms. A 30% gross margin means something very different for a retailer versus a software company.
 

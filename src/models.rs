@@ -1,7 +1,7 @@
 use serde::Serialize;
 use utoipa::ToSchema;
 
-/// One year of the Big Five fundamentals.
+/// One year of core fundamental metrics.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FundamentalsYear {
     pub fiscal_year: String,
@@ -13,7 +13,7 @@ pub struct FundamentalsYear {
     pub roic: Option<f64>,
 }
 
-/// Up to 10 years of Big Five fundamentals for a ticker.
+/// Up to 10 years of core fundamental metrics for a ticker.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FundamentalsResponse {
     pub ticker: String,
@@ -29,7 +29,7 @@ pub struct MetricCagr {
     pub cagr_10yr: Option<f64>,
 }
 
-/// Rule #1 Big Five growth rates.
+/// Core fundamental growth rates.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GrowthRatesResponse {
     pub ticker: String,
@@ -40,21 +40,21 @@ pub struct GrowthRatesResponse {
     pub roic: MetricCagr,
 }
 
-/// Rule #1 Phil Town sticker price calculation.
+/// Simplified DCF intrinsic value estimate.
 #[derive(Debug, Serialize, ToSchema)]
-pub struct StickerPriceResponse {
+pub struct IntrinsicValueResponse {
     pub ticker: String,
     /// Annual EPS growth rate used (decimal)
     pub growth_rate_used: f64,
-    /// Default P/E = 2 × growth_rate_used × 100
+    /// Growth-adjusted P/E = 2 × growth_rate_used × 100
     pub pe_ratio_used: f64,
     /// Estimated EPS 10 years from now
     pub future_eps: f64,
     /// Estimated stock price 10 years from now
     pub future_price: f64,
-    /// Estimated current sticker price: future_price discounted at 15% MARR for 10 years
-    pub estimated_current_sticker_price: f64,
-    /// Margin of safety price: 50% of sticker price
+    /// Estimated intrinsic value today: future_price discounted at 15% required return for 10 years
+    pub estimated_intrinsic_value: f64,
+    /// Margin of safety price: 50% of estimated intrinsic value (Benjamin Graham)
     pub margin_of_safety_price: f64,
 }
 
@@ -85,7 +85,7 @@ pub struct SummaryResponse {
     pub ticker: String,
     pub fundamentals: FundamentalsResponse,
     pub growth_rates: GrowthRatesResponse,
-    pub sticker_price: StickerPriceResponse,
+    pub intrinsic_value: IntrinsicValueResponse,
     pub graham_number: GrahamNumberResponse,
     pub peg: PegRatioResponse,
     pub momentum: MomentumResponse,

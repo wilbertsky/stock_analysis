@@ -69,14 +69,13 @@ pub async fn fetch_fundamentals(
     path = "/api/stock/{ticker}/fundamentals",
     tag = "stock",
     params(("ticker" = String, Path, description = "Ticker symbol, e.g. AAPL")),
-    description = "Returns up to 5 years of the Rule #1 'Big Five' fundamental metrics for a stock: \
+    description = "Returns up to 5 years of core fundamental metrics for a stock: \
         Revenue, EPS (Earnings Per Share), Book Value Per Share, Free Cash Flow Per Share, and ROIC \
-        (Return on Invested Capital). These are the core numbers Phil Town's Rule #1 investing \
-        framework uses to assess whether a company consistently grows in value. Consistent upward \
-        trends across all five metrics over time indicate a company with a durable competitive \
-        advantage — what Rule #1 calls a 'moat'. Data is sorted oldest to newest.",
+        (Return on Invested Capital). These five metrics are the foundation of growth-based value \
+        investing — consistently rising numbers across all five over time indicate a company with \
+        durable pricing power and a genuine competitive advantage. Data is sorted oldest to newest.",
     responses(
-        (status = 200, description = "Big Five fundamentals sorted oldest to newest", body = FundamentalsResponse),
+        (status = 200, description = "Core fundamental metrics sorted oldest to newest", body = FundamentalsResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
         (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
     )
@@ -95,14 +94,14 @@ pub async fn get_fundamentals(
     path = "/api/stock/{ticker}/growth-rates",
     tag = "stock",
     params(("ticker" = String, Path, description = "Ticker symbol, e.g. AAPL")),
-    description = "Calculates the Compound Annual Growth Rate (CAGR) for each of the Big Five \
-        metrics over 1-year, 5-year, and 10-year windows. In Rule #1 investing, you want to see \
-        all five metrics growing at 10% or more per year — ideally 15–20%+. \
-        ROIC is the most important: consistently above 10% means the company is efficiently \
-        turning invested capital into profit, which is the hallmark of a true moat business. \
+    description = "Calculates the Compound Annual Growth Rate (CAGR) for each of the five core \
+        fundamental metrics over 1-year, 5-year, and 10-year windows. \
+        Strong growth investors look for all five metrics growing at 10% or more per year — \
+        ideally 15–20%+. ROIC is the most telling: consistently above 10% means the company is \
+        efficiently converting invested capital into profit, a hallmark of durable competitive advantage. \
         Windows with insufficient data history return null.",
     responses(
-        (status = 200, description = "CAGR for each Big Five metric across available time windows", body = GrowthRatesResponse),
+        (status = 200, description = "CAGR for each fundamental metric across available time windows", body = GrowthRatesResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
         (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
     )
@@ -118,29 +117,31 @@ pub async fn get_growth_rates(
 
 #[utoipa::path(
     get,
-    path = "/api/stock/{ticker}/rule-number-one",
+    path = "/api/stock/{ticker}/intrinsic-value",
     tag = "stock",
     params(("ticker" = String, Path, description = "Ticker symbol, e.g. AAPL")),
-    description = "Computes Phil Town's Rule #1 sticker price and margin of safety price. \
-        The sticker price is the fair value of the stock today based on projected future growth. \
-        Steps: (1) Estimate future EPS in 10 years using historical EPS CAGR. \
-        (2) Multiply by a default P/E ratio of 2× the growth rate percentage (e.g. 15% growth → P/E of 30). \
-        (3) Discount that future price back to today at a 15% minimum acceptable rate of return (MARR) — \
-        the rate at which your money doubles roughly every 5 years. \
-        (4) The margin of safety price is 50% of the sticker price, giving you a buffer against \
-        uncertainty. Rule #1: never pay more than the margin of safety price. \
+    description = "Estimates intrinsic value using a simplified Discounted Cash Flow (DCF) approach \
+        based on earnings growth. This methodology traces back to Benjamin Graham and Warren Buffett \
+        and is grounded in the principle that a stock is worth the present value of its future earnings. \
+        Steps: (1) Estimate future EPS in 10 years using the historical EPS CAGR. \
+        (2) Apply a growth-adjusted P/E of 2× the growth rate percentage \
+        (e.g. 15% growth → P/E of 30) — a proxy for what the market typically pays for that growth speed. \
+        (3) Discount that future price back to today at a 15% minimum required rate of return, \
+        representing the return you demand to justify the investment risk. \
+        (4) The margin of safety price is 50% of the intrinsic value estimate, providing a buffer \
+        against uncertainty in the assumptions — a concept introduced by Benjamin Graham. \
         The growth rate is capped at 25% to avoid overoptimistic projections.",
     responses(
-        (status = 200, description = "Rule #1 sticker price and margin of safety", body = StickerPriceResponse),
+        (status = 200, description = "DCF intrinsic value estimate and margin of safety", body = IntrinsicValueResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
         (status = 422, description = "Cannot compute — EPS is zero/negative or insufficient history", body = crate::error::ErrorBody),
         (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
     )
 )]
-pub async fn get_rule_number_one(
+pub async fn get_intrinsic_value(
     State(state): State<AppState>,
     Path(ticker): Path<String>,
-) -> Result<Json<StickerPriceResponse>, AppError> {
+) -> Result<Json<IntrinsicValueResponse>, AppError> {
     let ticker = ticker.to_uppercase();
     let (years, _) = fetch_fundamentals(&state, &ticker).await?;
     let growth = calculations::build_growth_rates(&ticker, &years);
@@ -156,7 +157,7 @@ pub async fn get_rule_number_one(
         .and_then(|y| y.eps)
         .ok_or_else(|| AppError::Unprocessable("No EPS data available".into()))?;
 
-    Ok(Json(calculations::rule1_sticker_price(&ticker, current_eps, growth_rate, 0.15)?))
+    Ok(Json(calculations::growth_dcf_valuation(&ticker, current_eps, growth_rate, 0.15)?))
 }
 
 #[utoipa::path(
@@ -242,16 +243,16 @@ pub async fn get_peg(
     path = "/api/stock/{ticker}/summary",
     tag = "stock",
     params(("ticker" = String, Path, description = "Ticker symbol, e.g. AAPL")),
-    description = "Returns a complete analysis in a single response: Big Five fundamentals, \
-        growth rates, Rule #1 sticker price, Graham Number, PEG ratio, and price momentum \
+    description = "Returns a complete analysis in a single response: core fundamental metrics, \
+        growth rates, DCF intrinsic value estimate, Graham Number, PEG ratio, and price momentum \
         relative to the S&P 500. \
         How to read the summary: start with growth_rates to confirm the company consistently grows \
-        its Big Five metrics over time. Then compare the current market price against sticker_price \
-        (Rule #1 fair value) and graham_number (conservative asset-based value), and check the \
-        peg ratio for growth-adjusted valuation. Finally, review momentum to understand whether \
-        the market is currently rewarding or ignoring the stock relative to the S&P 500. \
+        its five core metrics over time. Then compare the current market price against \
+        intrinsic_value (DCF fair value estimate) and graham_number (conservative asset-based value), \
+        and check the peg ratio for growth-adjusted valuation. Finally, review momentum to understand \
+        whether the market is currently rewarding or ignoring the stock relative to the S&P 500. \
         A stock trading below both the margin of safety price and the Graham Number, with a PEG \
-        under 1.0, strong Big Five growth, and positive momentum, is a strong candidate for \
+        under 1.0, strong fundamental growth, and positive momentum, is a strong candidate for \
         further due diligence.",
     responses(
         (status = 200, description = "Complete valuation summary", body = SummaryResponse),
@@ -290,7 +291,7 @@ pub async fn get_summary(
     let pe = latest_pe
         .ok_or_else(|| AppError::Unprocessable("P/E ratio unavailable for this ticker".into()))?;
 
-    let sticker = calculations::rule1_sticker_price(&ticker, eps, growth_rate, 0.15)?;
+    let intrinsic_value = calculations::growth_dcf_valuation(&ticker, eps, growth_rate, 0.15)?;
     let graham = calculations::graham_number(&ticker, eps, bvps)?;
     let peg = calculations::peg_ratio(&ticker, pe, growth_rate)?;
     let momentum = calculations::momentum_score(&ticker, &prices, &spy_prices);
@@ -301,7 +302,7 @@ pub async fn get_summary(
         ticker,
         fundamentals,
         growth_rates: growth,
-        sticker_price: sticker,
+        intrinsic_value,
         graham_number: graham,
         peg,
         momentum,
@@ -356,10 +357,10 @@ pub async fn get_piotroski(
         The payout ratio (dividends paid ÷ net income) is key to sustainability: \
         below 60% is generally considered safe; above 80% may indicate the company is \
         returning more than it comfortably earns — a potential cut risk. \
-        In Rule #1 investing, dividends are a secondary signal — consistent and growing dividends \
-        can reinforce moat strength, but a high payout ratio at the expense of reinvestment \
-        may indicate slowing growth. The best dividend stocks grow their dividend every year \
-        while maintaining a healthy payout ratio.",
+        In growth-based value investing, dividends are a secondary signal — consistent and growing \
+        dividends can reinforce competitive strength, but a high payout ratio at the expense of \
+        reinvestment may indicate slowing growth. The best dividend stocks grow their dividend \
+        every year while maintaining a healthy payout ratio.",
     responses(
         (status = 200, description = "Dividend yield, payout ratio, and sustainability assessment", body = DividendMetricsResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
@@ -389,7 +390,7 @@ pub async fn get_dividends(
         Return on Equity — how efficiently the company earns returns for shareholders (>15% is strong); \
         and Debt-to-Equity ratio (lower is safer; <0.5 is conservative, >2 is leveraged). \
         High quality companies typically have wide margins, high ROE, and manageable debt — \
-        the classic combination that Rule #1 associates with durable competitive advantages ('moats'). \
+        the classic combination associated with durable competitive advantages. \
         Scoring: ROE contributes up to 35 points, gross margin up to 35 points plus 10 for improving trend, \
         and low D/E up to 20 points.",
     responses(

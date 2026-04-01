@@ -18,13 +18,13 @@ use state::AppState;
     info(
         title = "Stock Analysis API",
         version = "0.1.0",
-        description = "Rule #1, Graham Number, PEG ratio, and Big Five fundamentals via FMP."
+        description = "DCF intrinsic value, Graham Number, PEG ratio, and core fundamental metrics via FMP."
     ),
     paths(
         routes::health_check,
         routes::stock::get_fundamentals,
         routes::stock::get_growth_rates,
-        routes::stock::get_rule_number_one,
+        routes::stock::get_intrinsic_value,
         routes::stock::get_graham_number,
         routes::stock::get_peg,
         routes::stock::get_summary,
@@ -40,7 +40,7 @@ use state::AppState;
         FundamentalsResponse,
         MetricCagr,
         GrowthRatesResponse,
-        StickerPriceResponse,
+        IntrinsicValueResponse,
         GrahamNumberResponse,
         PegRatioResponse,
         SummaryResponse,
@@ -80,7 +80,7 @@ async fn main() {
         .routes(routes!(routes::health_check))
         .routes(routes!(routes::stock::get_fundamentals))
         .routes(routes!(routes::stock::get_growth_rates))
-        .routes(routes!(routes::stock::get_rule_number_one))
+        .routes(routes!(routes::stock::get_intrinsic_value))
         .routes(routes!(routes::stock::get_graham_number))
         .routes(routes!(routes::stock::get_peg))
         .routes(routes!(routes::stock::get_summary))
