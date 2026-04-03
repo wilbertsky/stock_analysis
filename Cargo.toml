@@ -7,18 +7,34 @@ edition = "2024"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
-utoipa = { version = "5", features = ["axum_extras"] }
+utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
 utoipa-axum = "0.2"
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenvy = "0.15"
 
+futures = "0.3"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "macros"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Auth
+argon2 = "0.5"
+jsonwebtoken = "9"
+rand = "0.8"
+
+# Encryption (FMP key storage)
+aes-gcm = "0.10"
+base64 = "0.22"
+
 [dev-dependencies]
 wiremock = "0.6"
-serde_json = "1"
 http-body-util = "0.1"
 bytes = "1"

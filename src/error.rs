@@ -20,6 +20,24 @@ pub enum AppError {
 
     #[error("{0}")]
     Unprocessable(String),
+
+    #[error("Invalid input: {0}")]
+    BadRequest(String),
+
+    #[error("Authentication required")]
+    Unauthorized,
+
+    #[error("Access denied")]
+    Forbidden,
+
+    #[error("Database error: {0}")]
+    Db(#[from] sqlx::Error),
+
+    #[error("Encryption error")]
+    Crypto,
+
+    #[error("Internal error: {0}")]
+    Internal(String),
 }
 
 #[derive(Serialize, ToSchema)]
@@ -34,7 +52,13 @@ impl IntoResponse for AppError {
             AppError::InsufficientData { .. } | AppError::Unprocessable(_) => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
+            AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Fmp(_) => StatusCode::BAD_GATEWAY,
+            AppError::Unauthorized => StatusCode::UNAUTHORIZED,
+            AppError::Forbidden => StatusCode::FORBIDDEN,
+            AppError::Db(_) | AppError::Crypto | AppError::Internal(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         };
         (status, Json(ErrorBody { error: self.to_string() })).into_response()
     }

@@ -27,6 +27,12 @@ impl FmpClient {
         }
     }
 
+    /// Construct from a shared reqwest Client (avoids spinning up a new connection pool
+    /// for each per-user client instance). Used for user-keyed authenticated requests.
+    pub fn with_shared_client(client: Client, api_key: String, base_url: String) -> Self {
+        Self { client, api_key, base_url }
+    }
+
     pub async fn income_statements(
         &self,
         ticker: &str,
@@ -93,6 +99,29 @@ impl FmpClient {
             return Err(AppError::NotFound);
         }
         Ok(list)
+    }
+
+    /// Returns the current bid/ask mid-price for a single ticker.
+    pub async fn quote_price(&self, ticker: &str) -> Result<f64, AppError> {
+        #[derive(Deserialize)]
+        struct Quote {
+            price: Option<f64>,
+        }
+        let url = format!("{}/quote-short", self.base_url);
+        let quotes: Vec<Quote> = self
+            .client
+            .get(&url)
+            .query(&[("symbol", ticker), ("apikey", &self.api_key)])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        quotes
+            .into_iter()
+            .next()
+            .and_then(|q| q.price)
+            .ok_or(AppError::NotFound)
     }
 
     async fn fetch_list_or_empty<T>(&self, url: &str, ticker: &str, limit: u32) -> Result<Vec<T>, AppError>

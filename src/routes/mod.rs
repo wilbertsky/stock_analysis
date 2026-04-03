@@ -1,3 +1,5 @@
+pub mod auth;
+pub mod portfolio;
 pub mod screener;
 pub mod stock;
 

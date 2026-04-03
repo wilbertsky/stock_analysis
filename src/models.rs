@@ -1,5 +1,7 @@
-use serde::Serialize;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 /// One year of core fundamental metrics.
 #[derive(Debug, Serialize, ToSchema)]
@@ -208,4 +210,90 @@ pub struct SectorScreenerResponse {
     pub results: Vec<ScreenerEntry>,
     /// Educational disclaimer — scores are not investment advice
     pub disclaimer: String,
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RegisterRequest {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct LoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AuthResponse {
+    pub token: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MeResponse {
+    pub user_id: Uuid,
+    pub email: String,
+    pub has_fmp_key: bool,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpsertFmpKeyRequest {
+    pub fmp_key: String,
+}
+
+// ── Portfolio ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreatePortfolioRequest {
+    pub name: String,
+    pub is_public: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PortfolioRow {
+    pub id: Uuid,
+    pub name: String,
+    pub is_public: bool,
+    /// Opaque token used to construct the public share URL.
+    pub share_token: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AddHoldingRequest {
+    pub ticker: String,
+    /// Optional number of shares. Required for dollar-weighted performance.
+    pub shares: Option<f64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HoldingRow {
+    pub id: Uuid,
+    pub ticker: String,
+    /// Price (USD) when the holding was added.
+    pub price_at_add: f64,
+    pub shares: Option<f64>,
+    pub added_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HoldingPerformance {
+    #[serde(flatten)]
+    pub holding: HoldingRow,
+    /// Current price fetched live from FMP.
+    pub current_price: f64,
+    /// (current_price / price_at_add - 1) × 100, in percent.
+    pub return_pct: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PortfolioPerformanceResponse {
+    pub portfolio: PortfolioRow,
+    pub holdings: Vec<HoldingPerformance>,
+    /// Average return % across holdings (share-weighted where shares are provided,
+    /// simple average otherwise). Null if no holdings.
+    pub total_return_pct: Option<f64>,
 }
