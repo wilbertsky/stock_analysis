@@ -11,13 +11,15 @@ pub struct Claims {
     /// Subject — user UUID.
     pub sub: Uuid,
     pub email: String,
+    /// "admin" or "subscriber"
+    pub role: String,
     /// Unix timestamp (seconds) at which the token expires.
     pub exp: usize,
 }
 
-pub fn encode_token(user_id: Uuid, email: &str, secret: &[u8]) -> Result<String, AppError> {
+pub fn encode_token(user_id: Uuid, email: &str, role: &str, secret: &[u8]) -> Result<String, AppError> {
     let exp = (chrono::Utc::now().timestamp() + TOKEN_EXPIRY_SECS) as usize;
-    let claims = Claims { sub: user_id, email: email.to_owned(), exp };
+    let claims = Claims { sub: user_id, email: email.to_owned(), role: role.to_owned(), exp };
     encode(&Header::default(), &claims, &EncodingKey::from_secret(secret))
         .map_err(|_| AppError::Internal("Token encoding failed".into()))
 }

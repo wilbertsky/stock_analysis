@@ -67,6 +67,52 @@ impl FmpClient {
         self.fetch_list_or_empty(&format!("{}/key-metrics", self.base_url), ticker, limit).await
     }
 
+    /// Search for tickers and company names.
+    /// Calls both search-symbol and search-name in parallel, merges and deduplicates by symbol.
+    pub async fn search(&self, query: &str, limit: u32) -> Result<Vec<SearchResult>, AppError> {
+        let symbol_url = format!("{}/search-symbol", self.base_url);
+        let name_url = format!("{}/search-name", self.base_url);
+
+        let (symbol_res, name_res) = tokio::join!(
+            self.client
+                .get(&symbol_url)
+                .query(&[("query", query), ("limit", &limit.to_string()), ("apikey", &self.api_key)])
+                .send(),
+            self.client
+                .get(&name_url)
+                .query(&[("query", query), ("limit", &limit.to_string()), ("apikey", &self.api_key)])
+                .send(),
+        );
+
+        let mut seen = std::collections::HashSet::new();
+        let mut results: Vec<SearchResult> = Vec::new();
+
+        // Symbol matches first (more relevant for ticker searches)
+        if let Ok(resp) = symbol_res {
+            if let Ok(list) = resp.json::<Vec<SearchResult>>().await {
+                for r in list {
+                    if seen.insert(r.symbol.clone()) {
+                        results.push(r);
+                    }
+                }
+            }
+        }
+
+        // Then name matches (fills in company-name searches)
+        if let Ok(resp) = name_res {
+            if let Ok(list) = resp.json::<Vec<SearchResult>>().await {
+                for r in list {
+                    if seen.insert(r.symbol.clone()) {
+                        results.push(r);
+                    }
+                }
+            }
+        }
+
+        results.truncate(limit as usize);
+        Ok(results)
+    }
+
     /// Fetches daily closing prices, newest-first. limit=260 ≈ 1 trading year.
     pub async fn historical_prices(
         &self,
@@ -99,6 +145,21 @@ impl FmpClient {
             return Err(AppError::NotFound);
         }
         Ok(list)
+    }
+
+    /// Fetches company profile (description, sector, industry, website, employees) from FMP.
+    pub async fn company_profile(&self, ticker: &str) -> Result<FmpProfile, AppError> {
+        let url = format!("{}/profile", self.base_url);
+        let profiles: Vec<FmpProfile> = self
+            .client
+            .get(&url)
+            .query(&[("symbol", ticker), ("apikey", &self.api_key)])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        profiles.into_iter().next().ok_or(AppError::NotFound)
     }
 
     /// Returns the current bid/ask mid-price for a single ticker.
@@ -198,4 +259,41 @@ pub struct KeyMetrics {
 pub struct HistoricalPrice {
     pub date: String,
     #[serde(default)] pub price: Option<f64>,
+}
+
+/// From /stable/search-symbol and /stable/search-name — ticker/company search result.
+/// FMP response fields: symbol, name, currency, exchangeFullName, exchange
+#[derive(Debug, Deserialize, Clone)]
+pub struct SearchResult {
+    pub symbol: String,
+    pub name: String,
+    #[serde(default, rename = "exchangeFullName")] pub stock_exchange: Option<String>,
+    #[serde(default, rename = "exchange")] pub exchange_short_name: Option<String>,
+}
+
+/// From /stable/profile — company description, sector, industry, website, employee count.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FmpProfile {
+    #[serde(default)] pub description: Option<String>,
+    #[serde(default)] pub sector: Option<String>,
+    #[serde(default)] pub industry: Option<String>,
+    #[serde(default)] pub website: Option<String>,
+    /// FMP returns this as a string (e.g. "150000")
+    #[serde(default, rename = "fullTimeEmployees", deserialize_with = "de_employees")]
+    pub full_time_employees: Option<i64>,
+}
+
+fn de_employees<'de, D>(de: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let v = Option::<serde_json::Value>::deserialize(de)?;
+    Ok(match v {
+        None => None,
+        Some(serde_json::Value::Number(n)) => n.as_i64(),
+        Some(serde_json::Value::String(s)) => s.replace(',', "").parse().ok(),
+        _ => None,
+    })
 }

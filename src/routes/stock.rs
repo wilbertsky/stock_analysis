@@ -1,10 +1,12 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
+use serde::Deserialize;
 use std::collections::HashMap;
 
 use crate::{
+    auth::middleware::AuthUser,
     calculations,
     error::AppError,
     models::*,
@@ -24,12 +26,13 @@ pub async fn fetch_fundamentals(
     state: &AppState,
     ticker: &str,
 ) -> Result<(Vec<FundamentalsYear>, Option<f64>), AppError> {
-    let limit = 5;
+    // 11 years: n>=6 for 5yr CAGR, n>=11 for 10yr CAGR (calculations::metric_cagr)
+    let limit = 11;
 
     let (income_list, ratio_list, km_list) = tokio::try_join!(
-        state.fmp.income_statements(ticker, limit),
-        state.fmp.ratios(ticker, limit),
-        state.fmp.key_metrics(ticker, limit),
+        state.providers.income_statements(ticker, limit),
+        state.providers.ratios(ticker, limit),
+        state.providers.key_metrics(ticker, limit),
     )?;
 
     // Index supplementary data by date for alignment (all lists are newest-first)
@@ -82,6 +85,7 @@ pub async fn fetch_fundamentals(
 )]
 pub async fn get_fundamentals(
     State(state): State<AppState>,
+    _auth: AuthUser,
     Path(ticker): Path<String>,
 ) -> Result<Json<FundamentalsResponse>, AppError> {
     let ticker = ticker.to_uppercase();
@@ -108,6 +112,7 @@ pub async fn get_fundamentals(
 )]
 pub async fn get_growth_rates(
     State(state): State<AppState>,
+    _auth: AuthUser,
     Path(ticker): Path<String>,
 ) -> Result<Json<GrowthRatesResponse>, AppError> {
     let ticker = ticker.to_uppercase();
@@ -140,6 +145,7 @@ pub async fn get_growth_rates(
 )]
 pub async fn get_intrinsic_value(
     State(state): State<AppState>,
+    _auth: AuthUser,
     Path(ticker): Path<String>,
 ) -> Result<Json<IntrinsicValueResponse>, AppError> {
     let ticker = ticker.to_uppercase();
@@ -181,6 +187,7 @@ pub async fn get_intrinsic_value(
 )]
 pub async fn get_graham_number(
     State(state): State<AppState>,
+    _auth: AuthUser,
     Path(ticker): Path<String>,
 ) -> Result<Json<GrahamNumberResponse>, AppError> {
     let ticker = ticker.to_uppercase();
@@ -220,6 +227,7 @@ pub async fn get_graham_number(
 )]
 pub async fn get_peg(
     State(state): State<AppState>,
+    _auth: AuthUser,
     Path(ticker): Path<String>,
 ) -> Result<Json<PegRatioResponse>, AppError> {
     let ticker = ticker.to_uppercase();
@@ -263,47 +271,56 @@ pub async fn get_peg(
 )]
 pub async fn get_summary(
     State(state): State<AppState>,
+    _auth: AuthUser,
     Path(ticker): Path<String>,
 ) -> Result<Json<SummaryResponse>, AppError> {
     let ticker = ticker.to_uppercase();
 
     let ((years, latest_pe), prices, spy_prices) = tokio::try_join!(
         fetch_fundamentals(&state, &ticker),
-        state.fmp.historical_prices(&ticker, 260),
-        state.fmp.historical_prices("SPY", 260),
+        state.providers.historical_prices(&ticker, 261),
+        state.providers.historical_prices("SPY", 261),
     )?;
 
     let growth = calculations::build_growth_rates(&ticker, &years);
     let latest = years.last().ok_or(AppError::NotFound)?;
 
-    let growth_rate = growth
-        .eps
-        .cagr_5yr
-        .or(growth.eps.cagr_1yr)
-        .ok_or(AppError::InsufficientData { needed: 2, have: years.len() })?;
+    // All valuation inputs are optional — missing or invalid data yields None for that metric,
+    // not a failure of the entire summary.
+    let growth_rate = growth.eps.cagr_5yr.or(growth.eps.cagr_1yr);
+    let eps = latest.eps;
+    let bvps = latest.book_value_per_share;
 
-    let eps = latest
-        .eps
-        .ok_or_else(|| AppError::Unprocessable("No EPS data available".into()))?;
-    let bvps = latest
-        .book_value_per_share
-        .ok_or_else(|| AppError::Unprocessable("No book value per share data available".into()))?;
-    let pe = latest_pe
-        .ok_or_else(|| AppError::Unprocessable("P/E ratio unavailable for this ticker".into()))?;
+    // DCF requires positive EPS and positive growth (negative growth produces $0 intrinsic value,
+    // which is technically correct for the formula but misleading to display).
+    let intrinsic_value = match (eps.filter(|&e| e > 0.0), growth_rate.filter(|&g| g > 0.0)) {
+        (Some(e), Some(g)) => calculations::growth_dcf_valuation(&ticker, e, g, 0.15).ok(),
+        _ => None,
+    };
 
-    let intrinsic_value = calculations::growth_dcf_valuation(&ticker, eps, growth_rate, 0.15)?;
-    let graham = calculations::graham_number(&ticker, eps, bvps)?;
-    let peg = calculations::peg_ratio(&ticker, pe, growth_rate)?;
+    // Graham Number requires positive EPS and positive book value per share.
+    let graham_number = match (eps, bvps) {
+        (Some(e), Some(b)) => calculations::graham_number(&ticker, e, b).ok(),
+        _ => None,
+    };
+
+    // PEG requires positive growth and a valid P/E ratio.
+    let peg = match (latest_pe, growth_rate) {
+        (Some(pe), Some(g)) => calculations::peg_ratio(&ticker, pe, g).ok(),
+        _ => None,
+    };
     let momentum = calculations::momentum_score(&ticker, &prices, &spy_prices);
 
+    let current_price = prices.first().and_then(|p| p.price);
     let fundamentals = FundamentalsResponse { ticker: ticker.clone(), years };
 
     Ok(Json(SummaryResponse {
         ticker,
+        current_price,
         fundamentals,
         growth_rates: growth,
         intrinsic_value,
-        graham_number: graham,
+        graham_number,
         peg,
         momentum,
     }))
@@ -334,13 +351,14 @@ pub async fn get_summary(
 )]
 pub async fn get_piotroski(
     State(state): State<AppState>,
+    _auth: AuthUser,
     Path(ticker): Path<String>,
 ) -> Result<Json<PiotroskiResponse>, AppError> {
     let ticker = ticker.to_uppercase();
     let (income, balance, cashflow) = tokio::try_join!(
-        state.fmp.income_statements(&ticker, 2),
-        state.fmp.balance_sheets(&ticker, 2),
-        state.fmp.cash_flow_statements(&ticker, 2),
+        state.providers.income_statements(&ticker, 2),
+        state.providers.balance_sheets(&ticker, 2),
+        state.providers.cash_flow_statements(&ticker, 2),
     )?;
     Ok(Json(calculations::piotroski_f_score(&ticker, &income, &balance, &cashflow)))
 }
@@ -369,11 +387,12 @@ pub async fn get_piotroski(
 )]
 pub async fn get_dividends(
     State(state): State<AppState>,
+    _auth: AuthUser,
     Path(ticker): Path<String>,
 ) -> Result<Json<DividendMetricsResponse>, AppError> {
     let ticker = ticker.to_uppercase();
     // fetch_list_or_empty so non-dividend-paying tickers return empty vec, not 404
-    let ratios = state.fmp.ratios(&ticker, 2).await?;
+    let ratios = state.providers.ratios(&ticker, 2).await?;
     Ok(Json(calculations::dividend_metrics(&ticker, &ratios)))
 }
 
@@ -401,13 +420,14 @@ pub async fn get_dividends(
 )]
 pub async fn get_quality(
     State(state): State<AppState>,
+    _auth: AuthUser,
     Path(ticker): Path<String>,
 ) -> Result<Json<QualityScoreResponse>, AppError> {
     let ticker = ticker.to_uppercase();
     let (income, ratios, km) = tokio::try_join!(
-        state.fmp.income_statements(&ticker, 2),
-        state.fmp.ratios(&ticker, 2),
-        state.fmp.key_metrics(&ticker, 2),
+        state.providers.income_statements(&ticker, 2),
+        state.providers.ratios(&ticker, 2),
+        state.providers.key_metrics(&ticker, 2),
     )?;
     Ok(Json(calculations::quality_score(&ticker, &income, &ratios, &km)))
 }
@@ -438,13 +458,163 @@ pub async fn get_quality(
 )]
 pub async fn get_momentum(
     State(state): State<AppState>,
+    _auth: AuthUser,
     Path(ticker): Path<String>,
 ) -> Result<Json<MomentumResponse>, AppError> {
     let ticker = ticker.to_uppercase();
     let (prices, spy_prices) = tokio::try_join!(
-        state.fmp.historical_prices(&ticker, 260),
-        state.fmp.historical_prices("SPY", 260),
+        state.providers.historical_prices(&ticker, 261),
+        state.providers.historical_prices("SPY", 261),
     )?;
 
     Ok(Json(calculations::momentum_score(&ticker, &prices, &spy_prices)))
+}
+
+// ── GET /api/search ───────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    pub q: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/search",
+    tag = "stock",
+    params(("q" = String, Query, description = "Ticker symbol or company name to search for")),
+    description = "Search for stocks by ticker symbol or company name. \
+        Returns up to 10 matches with symbol, company name, and exchange information.",
+    responses(
+        (status = 200, description = "Search results", body = StockSearchResponse),
+        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+    )
+)]
+pub async fn search_stocks(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Query(params): Query<SearchQuery>,
+) -> Result<Json<StockSearchResponse>, AppError> {
+    let q = params.q.trim().to_owned();
+    if q.is_empty() {
+        return Ok(Json(StockSearchResponse { results: vec![] }));
+    }
+    let raw = state.providers.search(&q, 10).await?;
+    let results = raw
+        .into_iter()
+        .map(|r| StockSearchResult {
+            symbol: r.symbol,
+            name: r.name,
+            exchange: r.stock_exchange,
+            exchange_short: r.exchange_short_name,
+        })
+        .collect();
+    Ok(Json(StockSearchResponse { results }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/stock/{ticker}/profile",
+    tag = "stock",
+    params(("ticker" = String, Path, description = "Ticker symbol")),
+    responses(
+        (status = 200, description = "Company profile", body = CompanyProfileResponse),
+        (status = 404, description = "Not found"),
+    )
+)]
+pub async fn get_company_profile(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Path(ticker): Path<String>,
+) -> Result<Json<CompanyProfileResponse>, AppError> {
+    let t = ticker.to_uppercase();
+
+    // 1. Check DB cache (valid for 30 days)
+    let cached = sqlx::query!(
+        r#"
+        SELECT description, sector, industry, website, employees
+        FROM company_profiles
+        WHERE ticker = $1
+          AND fetched_at > NOW() - INTERVAL '30 days'
+        "#,
+        t
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    if let Some(row) = cached {
+        return Ok(Json(CompanyProfileResponse {
+            ticker: t,
+            description: row.description.unwrap_or_default(),
+            sector: row.sector,
+            industry: row.industry,
+            website: row.website,
+            employees: row.employees,
+        }));
+    }
+
+    // 2. Fetch from FMP (server-level key)
+    let profile = state.fmp.company_profile(&t).await?;
+
+    // 3. Upsert into DB
+    let _ = sqlx::query!(
+        r#"
+        INSERT INTO company_profiles (ticker, description, sector, industry, website, employees, fetched_at)
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        ON CONFLICT (ticker) DO UPDATE
+          SET description = EXCLUDED.description,
+              sector      = EXCLUDED.sector,
+              industry    = EXCLUDED.industry,
+              website     = EXCLUDED.website,
+              employees   = EXCLUDED.employees,
+              fetched_at  = NOW()
+        "#,
+        t,
+        profile.description.as_deref(),
+        profile.sector.as_deref(),
+        profile.industry.as_deref(),
+        profile.website.as_deref(),
+        profile.full_time_employees,
+    )
+    .execute(&state.db)
+    .await;
+
+    Ok(Json(CompanyProfileResponse {
+        ticker: t,
+        description: profile.description.unwrap_or_default(),
+        sector: profile.sector,
+        industry: profile.industry,
+        website: profile.website,
+        employees: profile.full_time_employees,
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/stock/{ticker}/news",
+    tag = "stock",
+    params(("ticker" = String, Path, description = "Ticker symbol")),
+    responses(
+        (status = 200, description = "Recent news", body = CompanyNewsResponse),
+        (status = 404, description = "Not found"),
+    )
+)]
+pub async fn get_company_news(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Path(ticker): Path<String>,
+) -> Result<Json<CompanyNewsResponse>, AppError> {
+    let raw = state.providers.company_news(&ticker.to_uppercase(), 8).await?;
+    let items = raw
+        .into_iter()
+        .map(|i| NewsItem {
+            title: i.title,
+            url: i.url,
+            published: i.published,
+            source: i.source,
+            summary: i.summary,
+        })
+        .collect();
+    Ok(Json(CompanyNewsResponse { ticker: ticker.to_uppercase(), items }))
 }

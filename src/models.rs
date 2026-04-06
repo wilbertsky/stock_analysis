@@ -85,11 +85,16 @@ pub struct PegRatioResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SummaryResponse {
     pub ticker: String,
+    /// Most recent closing price (USD), taken from the first entry in the price history.
+    pub current_price: Option<f64>,
     pub fundamentals: FundamentalsResponse,
     pub growth_rates: GrowthRatesResponse,
-    pub intrinsic_value: IntrinsicValueResponse,
-    pub graham_number: GrahamNumberResponse,
-    pub peg: PegRatioResponse,
+    /// None when EPS growth is zero or negative (model projects $0 future price — not meaningful).
+    pub intrinsic_value: Option<IntrinsicValueResponse>,
+    /// None when EPS or book value per share is zero or negative.
+    pub graham_number: Option<GrahamNumberResponse>,
+    /// None when EPS growth is zero or negative (PEG is undefined for non-growth companies).
+    pub peg: Option<PegRatioResponse>,
     pub momentum: MomentumResponse,
 }
 
@@ -212,12 +217,47 @@ pub struct SectorScreenerResponse {
     pub disclaimer: String,
 }
 
+// ── Search ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StockSearchResult {
+    pub symbol: String,
+    pub name: String,
+    pub exchange: Option<String>,
+    pub exchange_short: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StockSearchResponse {
+    pub results: Vec<StockSearchResult>,
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterRequest {
     pub email: String,
     pub password: String,
+    /// Invite code assigned to this email address by an admin.
+    pub invite_code: String,
+    /// Optional display name shown in community portfolios instead of your email prefix.
+    pub display_name: Option<String>,
+}
+
+// ── Admin / invite codes ───────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateInviteRequest {
+    /// The email address this code is reserved for.
+    pub email: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InviteCodeRow {
+    pub code: String,
+    pub email: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub used_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -235,12 +275,79 @@ pub struct AuthResponse {
 pub struct MeResponse {
     pub user_id: Uuid,
     pub email: String,
+    /// "admin" or "subscriber"
+    pub role: String,
     pub has_fmp_key: bool,
+    /// Optional display name. When set, shown instead of email prefix in community views.
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateProfileRequest {
+    /// Set to a non-empty string to use as your display name, or null to clear it.
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+// ── Community / public portfolios ────────────────────────────────────────────
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PublicPortfolioSummary {
+    pub id: Uuid,
+    pub name: String,
+    /// Email prefix (before @) of the portfolio owner.
+    pub owner: String,
+    pub holdings: Vec<HoldingPerformance>,
+    /// Weighted average unrealised return across all holdings (%).
+    /// None only when the portfolio has no holdings.
+    pub total_return_pct: Option<f64>,
+}
+
+// ── Feedback ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SubmitFeedbackRequest {
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FeedbackRow {
+    pub id: Uuid,
+    pub user_id: Option<Uuid>,
+    /// Email of the submitter, null if the user account was deleted.
+    pub user_email: Option<String>,
+    pub message: String,
+    pub created_at: DateTime<Utc>,
+    pub is_read: bool,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpsertFmpKeyRequest {
     pub fmp_key: String,
+}
+
+// ── Portfolio import ──────────────────────────────────────────────────────────
+
+/// Per-row outcome from a CSV holdings import.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ImportRowResult {
+    /// 1-indexed row number (including the header row, so data starts at 2).
+    pub row: usize,
+    pub ticker: String,
+    pub ok: bool,
+    /// The price stored as the cost basis (lookup or explicit override).
+    pub price_used: Option<f64>,
+    /// Human-readable failure reason when `ok` is false.
+    pub error: Option<String>,
+}
+
+/// Summary result returned after a bulk CSV import.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ImportHoldingsResponse {
+    pub imported: usize,
+    pub failed: usize,
+    /// One entry per CSV data row, sorted by row number.
+    pub rows: Vec<ImportRowResult>,
 }
 
 // ── Portfolio ─────────────────────────────────────────────────────────────────
@@ -267,6 +374,10 @@ pub struct AddHoldingRequest {
     pub ticker: String,
     /// Optional number of shares. Required for dollar-weighted performance.
     pub shares: Option<f64>,
+    /// Optional purchase date (YYYY-MM-DD). When provided, the closing price on that
+    /// date is looked up from Yahoo Finance history and used as the cost basis.
+    /// Defaults to today's price when omitted.
+    pub date: Option<chrono::NaiveDate>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -296,4 +407,30 @@ pub struct PortfolioPerformanceResponse {
     /// Average return % across holdings (share-weighted where shares are provided,
     /// simple average otherwise). Null if no holdings.
     pub total_return_pct: Option<f64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CompanyProfileResponse {
+    pub ticker: String,
+    pub description: String,
+    pub sector: Option<String>,
+    pub industry: Option<String>,
+    pub website: Option<String>,
+    pub employees: Option<i64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct NewsItem {
+    pub title: String,
+    pub url: String,
+    /// ISO 8601 publish date.
+    pub published: Option<String>,
+    pub source: Option<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CompanyNewsResponse {
+    pub ticker: String,
+    pub items: Vec<NewsItem>,
 }

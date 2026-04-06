@@ -2,12 +2,17 @@ use std::sync::Arc;
 use base64::Engine as _;
 use reqwest::Client;
 use sqlx::PgPool;
+use crate::edgar::EdgarClient;
 use crate::fmp::FmpClient;
+use crate::providers::Providers;
+use crate::sp500::Sp500;
+use crate::yahoo::YahooClient;
 
 #[derive(Clone)]
 pub struct AppState {
-    /// Global FMP client using the server-level API key. Used by all public endpoints
-    /// and as a fallback for authenticated endpoints when the user has no stored key.
+    /// Unified data provider: EDGAR + Yahoo by default, FMP as fallback.
+    pub providers: Arc<Providers>,
+    /// Global FMP client — kept for direct FMP access (per-user keys, test overrides).
     pub fmp: Arc<FmpClient>,
     pub db: PgPool,
     /// HS256 secret for signing/verifying JWT tokens.
@@ -16,6 +21,8 @@ pub struct AppState {
     pub fmp_enc_key: Arc<[u8; 32]>,
     /// Shared HTTP client — all per-user FmpClient instances reuse this connection pool.
     pub http_client: Client,
+    /// S&P 500 constituent list indexed by sector slug.
+    pub sp500: Arc<Sp500>,
 }
 
 impl AppState {
@@ -41,16 +48,24 @@ impl AppState {
             .build()
             .expect("Failed to build HTTP client");
 
+        let fmp = Arc::new(FmpClient::with_shared_client(
+            http_client.clone(),
+            api_key,
+            "https://financialmodelingprep.com/stable".to_owned(),
+        ));
+        let edgar = Arc::new(EdgarClient::new(http_client.clone()).await);
+        let yahoo = Arc::new(YahooClient::new(http_client.clone()));
+        let providers = Arc::new(Providers::new(edgar, yahoo));
+        let sp500 = Arc::new(Sp500::load(&http_client).await);
+
         Self {
-            fmp: Arc::new(FmpClient::with_shared_client(
-                http_client.clone(),
-                api_key,
-                "https://financialmodelingprep.com/stable".to_owned(),
-            )),
+            providers,
+            fmp,
             db,
             jwt_secret: Arc::from(jwt_secret.as_slice()),
             fmp_enc_key: Arc::new(enc_key),
             http_client,
+            sp500,
         }
     }
 
@@ -71,14 +86,29 @@ impl AppState {
     /// Alternate constructor pointing FMP at a custom base URL (for integration tests).
     #[cfg(test)]
     pub fn with_base_url(api_key: String, base_url: String) -> Self {
+        use crate::edgar::EdgarClient;
+        use crate::providers::Providers;
+        use crate::sp500::Sp500;
+        use crate::yahoo::YahooClient;
+
         let http_client = Client::new();
+        let fmp = Arc::new(FmpClient::with_base_url(api_key, base_url.clone()));
+        // Tests use an empty EDGAR client (no CIK map) so all calls route through FMP mock.
+        let edgar = Arc::new(EdgarClient::new_empty(http_client.clone()));
+        // Disabled so test price requests fall back to the FMP mock server
+        let yahoo = Arc::new(YahooClient::new_disabled());
+        let providers = Arc::new(Providers::new(edgar, yahoo));
+        // Empty S&P 500 for tests — screener falls back to sectors.rs lists
+        let sp500 = Arc::new(Sp500::empty());
         Self {
-            fmp: Arc::new(FmpClient::with_base_url(api_key, base_url)),
+            providers,
+            fmp,
             db: PgPool::connect_lazy("postgres://localhost/test_db")
                 .expect("lazy pool creation"),
             jwt_secret: Arc::from(b"test_jwt_secret_key_32bytes_pad_".as_slice()),
             fmp_enc_key: Arc::new([0u8; 32]),
             http_client,
+            sp500,
         }
     }
 }

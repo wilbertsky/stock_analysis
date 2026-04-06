@@ -7,6 +7,7 @@ use axum::{
 use tokio::task::JoinSet;
 
 use crate::{
+    auth::middleware::AuthUser,
     calculations,
     error::AppError,
     models::{FundamentalsYear, ScreenerEntry, SectorScreenerResponse},
@@ -19,13 +20,16 @@ const DISCLAIMER: &str = "Scores are calculated from publicly available financia
     buy or sell any security, or a guarantee of future performance. Always conduct your own \
     research and consult a licensed financial advisor before making investment decisions.";
 
+/// Maximum number of tickers to score per sector after market-cap pre-filtering.
+const SCORE_TOP_N: usize = 20;
+
 #[utoipa::path(
     get,
     path = "/api/screener/{sector}",
     tag = "screener",
     params(("sector" = String, Path, description = "Sector name, e.g. technology, healthcare, financials")),
-    description = "Screens a curated list of large-cap stocks within a sector and ranks them by a \
-        weighted composite score that combines four factor investing signals: \
+    description = "Screens S&P 500 stocks within a sector and ranks them by a weighted composite \
+        score combining four factor investing signals: \
         Piotroski F-Score (30%) — accounting-based quality; \
         Business Quality (25%) — gross margin, ROE, and debt levels; \
         DCF Value Signal (25%) — how the current price compares to the calculated intrinsic value \
@@ -33,11 +37,9 @@ const DISCLAIMER: &str = "Scores are calculated from publicly available financia
         Momentum (20%) — relative price performance vs. the S&P 500 over 3/6/12 months. \
         Supported sectors: technology, healthcare, financials, energy, consumer-staples, \
         consumer-discretionary, industrials, materials, real-estate, communication, utilities. \
-        Each sector screens 10 representative large-cap stocks. Results include a score_tier \
-        label (High / Above Average / Average / Below Average) based on the composite score — \
-        this is an educational grouping, not an investment recommendation. \
+        Stocks are pre-filtered to the top market-cap names in the sector, then scored. \
         Stocks for which data is unavailable are omitted from results. \
-        Expect this endpoint to take 10–20 seconds as it fetches data for multiple tickers concurrently. \
+        Expect this endpoint to take 15–30 seconds as it fetches and scores multiple tickers. \
         A disclaimer field is included in every response.",
     responses(
         (status = 200, description = "Ranked stock picks for the sector", body = SectorScreenerResponse),
@@ -47,32 +49,55 @@ const DISCLAIMER: &str = "Scores are calculated from publicly available financia
 )]
 pub async fn get_sector_top_picks(
     State(state): State<AppState>,
+    _auth: AuthUser,
     Path(sector): Path<String>,
 ) -> Result<Json<SectorScreenerResponse>, AppError> {
-    let tickers = sectors::tickers_for_sector(&sector).ok_or_else(|| {
-        AppError::Unprocessable(format!(
-            "Unknown sector '{}'. Supported: {}",
-            sector,
-            sectors::SUPPORTED_SECTORS
-        ))
-    })?;
+    // Get tickers from S&P 500 constituent list, falling back to curated sectors.rs lists.
+    let candidate_tickers: Vec<String> = if state.sp500.is_loaded() {
+        state
+            .sp500
+            .tickers_for_sector(&sector)
+            .ok_or_else(|| {
+                AppError::Unprocessable(format!(
+                    "Unknown sector '{}'. Supported: {}",
+                    sector,
+                    sectors::SUPPORTED_SECTORS
+                ))
+            })?
+            .to_vec()
+    } else {
+        sectors::tickers_for_sector(&sector)
+            .ok_or_else(|| {
+                AppError::Unprocessable(format!(
+                    "Unknown sector '{}'. Supported: {}",
+                    sector,
+                    sectors::SUPPORTED_SECTORS
+                ))
+            })?
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    };
+
+    // Pre-filter to top SCORE_TOP_N by market cap to keep scoring time reasonable.
+    let tickers_to_score = top_by_market_cap(&state, &candidate_tickers).await;
 
     // Fetch SPY prices once — shared benchmark for all momentum calculations.
-    let spy_prices = state.fmp.historical_prices("SPY", 260).await.unwrap_or_default();
+    let spy_prices = state.providers.historical_prices("SPY", 260).await.unwrap_or_default();
     let spy_prices = Arc::new(spy_prices);
 
-    // Score each ticker concurrently, limiting to 3 in-flight at a time.
-    let sem = Arc::new(tokio::sync::Semaphore::new(3));
+    // Score each ticker concurrently, limiting to 5 in-flight at a time.
+    let sem = Arc::new(tokio::sync::Semaphore::new(5));
     let mut set = JoinSet::new();
 
-    for &ticker in tickers {
+    for ticker in tickers_to_score {
         let state = state.clone();
         let spy_prices = spy_prices.clone();
         let sem = sem.clone();
 
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            score_ticker(&state, ticker, &spy_prices).await
+            score_ticker(&state, &ticker, &spy_prices).await
         });
     }
 
@@ -98,6 +123,30 @@ pub async fn get_sector_top_picks(
     }))
 }
 
+/// Returns up to `SCORE_TOP_N` tickers sorted by market cap descending.
+/// Fetches market caps from Yahoo Finance in one batch request.
+/// If market caps cannot be fetched, returns the first `SCORE_TOP_N` from the input list.
+async fn top_by_market_cap(state: &AppState, tickers: &[String]) -> Vec<String> {
+    let caps = state.providers.batch_market_caps(tickers).await;
+
+    if caps.is_empty() {
+        // Fallback: take first SCORE_TOP_N alphabetically (same order as dataset)
+        return tickers.iter().take(SCORE_TOP_N).cloned().collect();
+    }
+
+    let mut with_caps: Vec<(&String, u64)> = tickers
+        .iter()
+        .map(|t| (t, caps.get(t).copied().unwrap_or(0)))
+        .collect();
+
+    with_caps.sort_by(|a, b| b.1.cmp(&a.1));
+    with_caps
+        .into_iter()
+        .take(SCORE_TOP_N)
+        .map(|(t, _)| t.clone())
+        .collect()
+}
+
 /// Fetch and score a single ticker. Returns None if any required data is unavailable.
 async fn score_ticker(
     state: &AppState,
@@ -105,12 +154,12 @@ async fn score_ticker(
     spy_prices: &[crate::fmp::HistoricalPrice],
 ) -> Option<ScreenerEntry> {
     let (income_r, balance_r, cashflow_r, ratios_r, km_r, prices_r) = tokio::join!(
-        state.fmp.income_statements(ticker, 5),
-        state.fmp.balance_sheets(ticker, 2),
-        state.fmp.cash_flow_statements(ticker, 2),
-        state.fmp.ratios(ticker, 5),
-        state.fmp.key_metrics(ticker, 5),
-        state.fmp.historical_prices(ticker, 260),
+        state.providers.income_statements(ticker, 5),
+        state.providers.balance_sheets(ticker, 2),
+        state.providers.cash_flow_statements(ticker, 2),
+        state.providers.ratios(ticker, 5),
+        state.providers.key_metrics(ticker, 5),
+        state.providers.historical_prices(ticker, 260),
     );
 
     let income = income_r.ok()?;

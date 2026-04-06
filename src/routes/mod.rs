@@ -1,4 +1,6 @@
+pub mod admin;
 pub mod auth;
+pub mod feedback;
 pub mod portfolio;
 pub mod screener;
 pub mod stock;
@@ -10,6 +12,7 @@ use crate::models::HealthResponse;
     get,
     path = "/api/health",
     tag = "health",
+    security(()),
     responses(
         (status = 200, description = "Service is healthy", body = HealthResponse)
     )
