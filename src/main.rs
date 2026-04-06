@@ -1,16 +1,21 @@
 mod auth;
 mod calculations;
 mod crypto;
+mod edgar;
 mod error;
 mod fmp;
 mod models;
+mod providers;
 mod routes;
 mod sectors;
+mod sp500;
 mod state;
+mod yahoo;
 
 #[cfg(test)]
 mod route_tests;
 
+use tower_http::cors::{Any, CorsLayer};
 use utoipa::{openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme}, Modify, OpenApi};
 use utoipa_axum::{router::OpenApiRouter, routes};
 use utoipa_swagger_ui::SwaggerUi;
@@ -46,8 +51,16 @@ impl Modify for BearerAuth {
             licensed financial advisor before making investment decisions."
     ),
     modifiers(&BearerAuth),
+    // All endpoints require a valid JWT by default.
+    // Public endpoints override this with security(()) in their path macro.
+    security(
+        ("bearer_auth" = [])
+    ),
     paths(
         routes::health_check,
+        routes::feedback::submit_feedback,
+        routes::feedback::list_feedback,
+        routes::feedback::mark_read,
         routes::stock::get_fundamentals,
         routes::stock::get_growth_rates,
         routes::stock::get_intrinsic_value,
@@ -58,21 +71,31 @@ impl Modify for BearerAuth {
         routes::stock::get_dividends,
         routes::stock::get_quality,
         routes::stock::get_momentum,
+        routes::stock::search_stocks,
+        routes::stock::get_company_profile,
+        routes::stock::get_company_news,
         routes::screener::get_sector_top_picks,
+        routes::admin::create_invite,
+        routes::admin::list_invites,
         routes::auth::register,
         routes::auth::login,
         routes::auth::get_me,
+        routes::auth::update_profile,
         routes::auth::upsert_fmp_key,
         routes::portfolio::create_portfolio,
         routes::portfolio::list_portfolios,
         routes::portfolio::get_portfolio,
         routes::portfolio::delete_portfolio,
         routes::portfolio::add_holding,
+        routes::portfolio::import_holdings,
         routes::portfolio::remove_holding,
         routes::portfolio::get_public_portfolio,
+        routes::portfolio::get_community_portfolios,
     ),
     components(schemas(
         HealthResponse,
+        SubmitFeedbackRequest,
+        FeedbackRow,
         FundamentalsYear,
         FundamentalsResponse,
         MetricCagr,
@@ -87,10 +110,18 @@ impl Modify for BearerAuth {
         MomentumResponse,
         ScreenerEntry,
         SectorScreenerResponse,
+        StockSearchResult,
+        StockSearchResponse,
+        CompanyProfileResponse,
+        CompanyNewsResponse,
+        NewsItem,
+        CreateInviteRequest,
+        InviteCodeRow,
         RegisterRequest,
         LoginRequest,
         AuthResponse,
         MeResponse,
+        UpdateProfileRequest,
         UpsertFmpKeyRequest,
         CreatePortfolioRequest,
         PortfolioRow,
@@ -98,10 +129,15 @@ impl Modify for BearerAuth {
         HoldingRow,
         HoldingPerformance,
         PortfolioPerformanceResponse,
+        PublicPortfolioSummary,
+        ImportRowResult,
+        ImportHoldingsResponse,
         error::ErrorBody,
     )),
     tags(
+        (name = "admin", description = "Admin-only operations"),
         (name = "health", description = "Service health"),
+        (name = "feedback", description = "User feedback"),
         (name = "stock", description = "Stock valuation and analysis"),
         (name = "screener", description = "Sector screener"),
         (name = "auth", description = "User accounts and authentication"),
@@ -144,27 +180,46 @@ async fn main() {
         .routes(routes!(routes::stock::get_dividends))
         .routes(routes!(routes::stock::get_quality))
         .routes(routes!(routes::stock::get_momentum))
+        .routes(routes!(routes::stock::search_stocks))
+        .routes(routes!(routes::stock::get_company_profile))
+        .routes(routes!(routes::stock::get_company_news))
         .routes(routes!(routes::screener::get_sector_top_picks))
+        .routes(routes!(routes::admin::create_invite))
+        .routes(routes!(routes::admin::list_invites))
         .routes(routes!(routes::auth::register))
         .routes(routes!(routes::auth::login))
         .routes(routes!(routes::auth::get_me))
+        .routes(routes!(routes::auth::update_profile))
         .routes(routes!(routes::auth::upsert_fmp_key))
         .routes(routes!(routes::portfolio::create_portfolio))
         .routes(routes!(routes::portfolio::list_portfolios))
         .routes(routes!(routes::portfolio::get_portfolio))
         .routes(routes!(routes::portfolio::delete_portfolio))
         .routes(routes!(routes::portfolio::add_holding))
+        .routes(routes!(routes::portfolio::import_holdings))
         .routes(routes!(routes::portfolio::remove_holding))
         .routes(routes!(routes::portfolio::get_public_portfolio))
+        .routes(routes!(routes::portfolio::get_community_portfolios))
+        .routes(routes!(routes::feedback::submit_feedback))
+        .routes(routes!(routes::feedback::list_feedback))
+        .routes(routes!(routes::feedback::mark_read))
         .with_state(state)
         .split_for_parts();
 
-    let app = router.merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", api));
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:8080")
+    let app = router
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", api))
+        .layer(cors);
+
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_owned());
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
         .await
         .unwrap();
-    tracing::info!("Listening on http://localhost:8080");
-    tracing::info!("Swagger UI: http://localhost:8080/swagger-ui");
+    tracing::info!("Listening on http://0.0.0.0:{}", port);
+    tracing::info!("Swagger UI: http://0.0.0.0:{}/swagger-ui", port);
     axum::serve(listener, app).await.unwrap();
 }
