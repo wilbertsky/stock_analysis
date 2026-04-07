@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO company_profiles (ticker, description, sector, industry, website, employees, fetched_at)\n        VALUES ($1, $2, $3, $4, $5, $6, NOW())\n        ON CONFLICT (ticker) DO UPDATE\n          SET description = EXCLUDED.description,\n              sector      = EXCLUDED.sector,\n              industry    = EXCLUDED.industry,\n              website     = EXCLUDED.website,\n              employees   = EXCLUDED.employees,\n              fetched_at  = NOW()\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "47ad93fb6625b8676d16e8c0dd19c2011bd83c0b5a695b2355eb716551469bac"
+}

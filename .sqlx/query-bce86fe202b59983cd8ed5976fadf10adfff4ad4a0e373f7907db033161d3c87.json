@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT description, sector, industry, website, employees\n        FROM company_profiles\n        WHERE ticker = $1\n          AND fetched_at > NOW() - INTERVAL '30 days'\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "sector",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "industry",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "website",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "employees",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "bce86fe202b59983cd8ed5976fadf10adfff4ad4a0e373f7907db033161d3c87"
+}

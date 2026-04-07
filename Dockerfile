@@ -15,6 +15,8 @@ RUN rm src/main.rs
 # Build the real binary
 COPY src ./src
 COPY migrations ./migrations
+COPY .sqlx ./.sqlx
+ENV SQLX_OFFLINE=true
 RUN touch src/main.rs && cargo build --release
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
