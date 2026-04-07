@@ -1,2 +1,5 @@
 [phases.setup]
-nixPkgs = ["rust_1_88", "openssl", "pkg-config"]
+nixPkgs = ["rustup", "openssl", "pkg-config"]
+
+[phases.install]
+cmds = ["rustup toolchain install 1.88.0 && rustup default 1.88.0"]
