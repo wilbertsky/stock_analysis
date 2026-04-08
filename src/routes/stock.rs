@@ -28,11 +28,12 @@ pub async fn fetch_fundamentals(
 ) -> Result<(Vec<FundamentalsYear>, Option<f64>), AppError> {
     // 11 years: n>=6 for 5yr CAGR, n>=11 for 10yr CAGR (calculations::metric_cagr)
     let limit = 11;
+    let providers = state.providers_with_server_fmp();
 
     let (income_list, ratio_list, km_list) = tokio::try_join!(
-        state.providers.income_statements(ticker, limit),
-        state.providers.ratios(ticker, limit),
-        state.providers.key_metrics(ticker, limit),
+        providers.income_statements(ticker, limit),
+        providers.ratios(ticker, limit),
+        providers.key_metrics(ticker, limit),
     )?;
 
     // Index supplementary data by date for alignment (all lists are newest-first)
@@ -276,10 +277,11 @@ pub async fn get_summary(
 ) -> Result<Json<SummaryResponse>, AppError> {
     let ticker = ticker.to_uppercase();
 
+    let providers = state.providers_with_server_fmp();
     let ((years, latest_pe), prices, spy_prices) = tokio::try_join!(
         fetch_fundamentals(&state, &ticker),
-        state.providers.historical_prices(&ticker, 261),
-        state.providers.historical_prices("SPY", 261),
+        providers.historical_prices(&ticker, 261),
+        providers.historical_prices("SPY", 261),
     )?;
 
     let growth = calculations::build_growth_rates(&ticker, &years);
@@ -355,10 +357,11 @@ pub async fn get_piotroski(
     Path(ticker): Path<String>,
 ) -> Result<Json<PiotroskiResponse>, AppError> {
     let ticker = ticker.to_uppercase();
+    let providers = state.providers_with_server_fmp();
     let (income, balance, cashflow) = tokio::try_join!(
-        state.providers.income_statements(&ticker, 2),
-        state.providers.balance_sheets(&ticker, 2),
-        state.providers.cash_flow_statements(&ticker, 2),
+        providers.income_statements(&ticker, 2),
+        providers.balance_sheets(&ticker, 2),
+        providers.cash_flow_statements(&ticker, 2),
     )?;
     Ok(Json(calculations::piotroski_f_score(&ticker, &income, &balance, &cashflow)))
 }
@@ -392,7 +395,7 @@ pub async fn get_dividends(
 ) -> Result<Json<DividendMetricsResponse>, AppError> {
     let ticker = ticker.to_uppercase();
     // fetch_list_or_empty so non-dividend-paying tickers return empty vec, not 404
-    let ratios = state.providers.ratios(&ticker, 2).await?;
+    let ratios = state.providers_with_server_fmp().ratios(&ticker, 2).await?;
     Ok(Json(calculations::dividend_metrics(&ticker, &ratios)))
 }
 
@@ -424,10 +427,11 @@ pub async fn get_quality(
     Path(ticker): Path<String>,
 ) -> Result<Json<QualityScoreResponse>, AppError> {
     let ticker = ticker.to_uppercase();
+    let providers = state.providers_with_server_fmp();
     let (income, ratios, km) = tokio::try_join!(
-        state.providers.income_statements(&ticker, 2),
-        state.providers.ratios(&ticker, 2),
-        state.providers.key_metrics(&ticker, 2),
+        providers.income_statements(&ticker, 2),
+        providers.ratios(&ticker, 2),
+        providers.key_metrics(&ticker, 2),
     )?;
     Ok(Json(calculations::quality_score(&ticker, &income, &ratios, &km)))
 }
@@ -462,9 +466,10 @@ pub async fn get_momentum(
     Path(ticker): Path<String>,
 ) -> Result<Json<MomentumResponse>, AppError> {
     let ticker = ticker.to_uppercase();
+    let providers = state.providers_with_server_fmp();
     let (prices, spy_prices) = tokio::try_join!(
-        state.providers.historical_prices(&ticker, 261),
-        state.providers.historical_prices("SPY", 261),
+        providers.historical_prices(&ticker, 261),
+        providers.historical_prices("SPY", 261),
     )?;
 
     Ok(Json(calculations::momentum_score(&ticker, &prices, &spy_prices)))

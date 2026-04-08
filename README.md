@@ -1,6 +1,6 @@
 # Stock Analysis API
 
-A REST API built in Rust with [Axum](https://github.com/tokio-rs/axum) that provides fundamental stock analysis using value investing frameworks. Data is sourced from [Financial Modeling Prep (FMP)](https://financialmodelingprep.com/).
+A REST API built in Rust with [Axum](https://github.com/tokio-rs/axum) that provides fundamental stock analysis using value investing frameworks. Data is sourced from [EDGAR](https://www.sec.gov/cgi-bin/browse-edgar) (primary) and [Financial Modeling Prep (FMP)](https://financialmodelingprep.com/) (fallback).
 
 ## Features
 
@@ -14,9 +14,7 @@ A REST API built in Rust with [Axum](https://github.com/tokio-rs/axum) that prov
 - **Quality Score** — Composite business quality score from gross margin, ROE, and debt levels (0–100)
 - **Momentum Score** — 3/6/12-month price returns relative to the S&P 500 (0–100)
 - **Summary** — Fundamentals, valuations, and momentum in a single endpoint
-- **Sector Screener** — Ranks large-cap stocks within a sector using a weighted composite of all four factor scores
-
-Interactive API documentation is served via Swagger UI.
+- **Sector Screener** — Ranks large-cap stocks within a sector using a weighted composite score that adapts to sector characteristics
 
 ## Getting Started
 
@@ -69,7 +67,9 @@ Visit `http://localhost:8080/swagger-ui` to explore and test all endpoints inter
 
 Supported sectors: `technology`, `healthcare`, `financials`, `energy`, `consumer-staples`, `consumer-discretionary`, `industrials`, `materials`, `real-estate`, `communication`, `utilities`
 
-Each sector screens 10 representative large-cap stocks and ranks them by a weighted composite score. Expect 10–20 seconds response time as data is fetched concurrently.
+Each sector screens up to 20 large-cap stocks (pre-filtered by market cap) and ranks them by a weighted composite score. The scoring model adapts to the sector — see [Sector Screener Models](#sector-screener-models) below. Expect 15–30 seconds response time as data is fetched concurrently.
+
+The response includes `scoring_model`, `score_labels`, and `score_weights` fields so clients can display the correct labels dynamically without hardcoding.
 
 ### Examples
 
@@ -86,8 +86,11 @@ curl http://localhost:8080/api/stock/MSFT/piotroski
 # Momentum vs S&P 500
 curl http://localhost:8080/api/stock/NVDA/momentum
 
-# Top-ranked technology stocks
+# Top-ranked technology stocks (Standard model)
 curl http://localhost:8080/api/screener/technology
+
+# Top-ranked financial stocks (Financials model)
+curl http://localhost:8080/api/screener/financials
 ```
 
 ## Analysis Methods
@@ -102,20 +105,84 @@ Conservative intrinsic value estimate based purely on earnings and book value: `
 Adjusts the P/E ratio for growth: `P/E ÷ EPS growth rate %`. Below 1.0 may indicate undervaluation relative to growth; below 0.5 was considered a bargain by Lynch.
 
 ### Piotroski F-Score (Joseph Piotroski)
-Nine binary signals across three groups — profitability (F1–F4), leverage and liquidity (F5–F7), and operating efficiency (F8–F9). Scores ≥7 indicate a financially strong company; scores ≤2 indicate potential distress.
+Nine binary signals across three groups — profitability (F1–F4), leverage and liquidity (F5–F7), and operating efficiency (F8–F9). Scores ≥7 indicate a financially strong company; scores ≤2 indicate potential distress. Designed for operating businesses — not appropriate for banks or REITs.
 
 ### Quality Score
 Composite 0–100 score based on gross margin (pricing power), return on equity (capital efficiency), and debt-to-equity (financial risk). High-quality companies typically have wide margins, high ROE, and manageable debt — the combination most associated with durable competitive advantage.
 
 ### Momentum Score
-Measures 3-month, 6-month, and 12-month price returns relative to the S&P 500 (SPY). Score starts at 50 (neutral) and shifts up for outperformance or down for underperformance across each period. Grounded in decades of academic research showing that recent outperformers tend to continue outperforming near-term.
+Measures 3-month, 6-month, and 12-month price returns relative to the S&P 500 (SPY). Score starts at 50 (neutral) and shifts up for outperformance or down for underperformance across each period. Grounded in decades of academic research showing that recent outperformers tend to continue outperforming near-term. Applicable to all sectors.
 
-### Sector Screener
-Ranks stocks within a sector using a weighted composite of all four factor scores:
-- **Piotroski F-Score** — 30%
-- **Quality Score** — 25%
-- **DCF Value Signal** — 25% (how current price compares to intrinsic value and margin of safety price)
-- **Momentum Score** — 20%
+### Sector-Specific Score Helpers
+Five additional scoring functions (all 0–100) are used by the sector screener models:
+
+- **ROE Quality Score** — Return on equity tiered 0–100. ≥20% = 100, ≥15% = 80, ≥10% = 60, ≥7% = 40, ≥4% = 20. Used as the primary signal in the Financials model, where ROE is the best measure of profitability.
+- **P/B Value Score** — Price-to-book ratio (price ÷ book value per share) inverted to a 0–100 score. ≤1.0 = 100, ≤1.5 = 80, ≤2.0 = 60, ≤3.0 = 40, ≤5.0 = 20. Lower P/B = closer to or below asset value.
+- **Debt Safety Score** — Debt-to-equity ratio tiered 0–100. Net cash position or D/E < 0.3 = 100. Rewarded for conservative balance sheets; penalized for high leverage.
+- **Dividend Quality Score** — Combines dividend yield (0–50 points) with payout sustainability (0–30 points), capped at 100. No dividend paid = 0. Used for REITs, Consumer Staples, and Utilities.
+- **FCF Yield Score** — Free cash flow per share divided by price, tiered 0–100. ≥10% = 100, ≥7% = 80, ≥5% = 60, ≥3% = 40, ≥1% = 20. Used in the Energy model where cash generation matters more than reported earnings.
+
+## Sector Screener Models
+
+The screener applies one of five scoring models depending on the sector. Each model assembles four score slots (A–D, all 0–100) with different weights. The `score_labels` and `score_weights` fields in the API response always describe the model in use.
+
+### Standard Model
+*Sectors: Technology, Healthcare, Communication, Consumer Discretionary, Industrials, Materials*
+
+| Slot | Signal | Weight | Description |
+|------|--------|--------|-------------|
+| A | Piotroski F-Score | 30% | Accounting quality across 9 binary signals |
+| B | Business Quality | 25% | Gross margin, ROE, and debt levels |
+| C | DCF Value Signal | 25% | Price vs intrinsic value and margin of safety |
+| D | Momentum vs SPY | 20% | 3/6/12-month relative price performance |
+
+### Financials Model
+*Sectors: Financials*
+
+Banks and financial companies have balance sheets where debt is a product, not a burden. Piotroski's asset-efficiency signals are not meaningful here. ROE and P/B are the standard lenses for financial sector valuation.
+
+| Slot | Signal | Weight | Description |
+|------|--------|--------|-------------|
+| A | Return on Equity | 35% | Primary profitability measure for banks |
+| B | Price-to-Book | 25% | Price vs net asset value |
+| C | Momentum vs SPY | 25% | Relative price performance |
+| D | Debt Safety | 15% | Leverage relative to equity |
+
+### Real Estate Model
+*Sectors: Real Estate*
+
+REITs are required to distribute ≥90% of taxable income as dividends, making DCF and earnings-based metrics misleading. Dividend yield and asset value (P/B) are the primary signals.
+
+| Slot | Signal | Weight | Description |
+|------|--------|--------|-------------|
+| A | Dividend Quality | 35% | Yield level and payout sustainability |
+| B | Price-to-Book | 25% | Price vs underlying property asset value |
+| C | Momentum vs SPY | 25% | Relative price performance |
+| D | Debt Safety | 15% | Leverage (critical in rising rate environments) |
+
+### Energy Model
+*Sectors: Energy*
+
+Energy companies are capital-intensive with earnings tied to commodity price cycles. Free cash flow generation is more reliable than reported EPS for evaluating cash return capacity.
+
+| Slot | Signal | Weight | Description |
+|------|--------|--------|-------------|
+| A | Piotroski F-Score | 25% | Balance sheet and efficiency signals |
+| B | FCF Yield | 30% | Free cash flow per share ÷ price |
+| C | Momentum vs SPY | 30% | Relative price performance |
+| D | Business Quality | 15% | Gross margin and debt quality |
+
+### Dividend Model
+*Sectors: Consumer Staples, Utilities*
+
+Defensive sectors held primarily for stable, growing income. Dividend health is weighted heavily alongside traditional value and quality signals.
+
+| Slot | Signal | Weight | Description |
+|------|--------|--------|-------------|
+| A | Dividend Quality | 30% | Yield level and payout sustainability |
+| B | Business Quality | 25% | Gross margin, ROE, and debt levels |
+| C | DCF Value Signal | 25% | Price vs intrinsic value |
+| D | Momentum vs SPY | 20% | Relative price performance |
 
 ## A Note on Score Interpretation
 
@@ -123,10 +190,10 @@ The screener returns a `score_tier` label (High, Above Average, Average, Below A
 
 Key limitations to keep in mind:
 
-- **Data depth** — The free FMP tier provides 5 years of history. CAGR calculations and trend analysis are more reliable with 10+ years of data.
+- **Data depth** — The free FMP tier provides limited history for some endpoints. CAGR calculations and trend analysis are more reliable with 10+ years of data.
 - **No moat analysis** — Quantitative scores cannot capture *why* a company has a durable competitive advantage (brand, switching costs, network effects, cost structure). That qualitative judgement requires reading the business, not just the numbers.
-- **Weights are not backtested** — The composite scoring weights are reasonable based on factor investing research, but have not been validated against historical returns for this specific combination.
-- **No sector normalization** — Score thresholds are not adjusted for industry norms. A 30% gross margin means something very different for a retailer versus a software company.
+- **Weights are not backtested** — The composite scoring weights are based on factor investing research but have not been validated against historical returns for this specific combination.
+- **Sector models are heuristics** — The five models reflect broadly accepted analytical frameworks for each sector type, but individual companies within a sector may warrant a different lens.
 
 Use these scores to build a shortlist of companies worth deeper investigation — not as a substitute for understanding the business.
 
@@ -136,10 +203,10 @@ All scores and outputs provided by this API are for **educational purposes only*
 
 ## Notes
 
-- Free FMP accounts are limited to 5 years of historical data
+- Free FMP accounts are limited to 5 years of historical data for most endpoints
 - 5-year and 10-year CAGRs require more data points than the free tier provides and will return `null`
 - ROIC, Book Value/Share, and FCF/Share may return `null` if not available on your FMP plan
-- The sector screener fetches data for 10 stocks plus SPY concurrently — allow 10–20 seconds
+- The sector screener fetches data for up to 20 stocks plus SPY concurrently — allow 15–30 seconds
 
 ## License
 

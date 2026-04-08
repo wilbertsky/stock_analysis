@@ -13,7 +13,7 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
     };
 
-    use crate::{routes, state::AppState};
+    use crate::{auth::jwt::encode_token, routes, state::AppState};
 
     // ── Router builder ────────────────────────────────────────────────────────
 
@@ -32,16 +32,26 @@ mod tests {
             .with_state(state)
     }
 
+    // ── Auth helper ───────────────────────────────────────────────────────────
+
+    /// Generates a valid JWT signed with the test AppState's hardcoded secret.
+    fn test_token() -> String {
+        let secret = b"test_jwt_secret_key_32bytes_pad_";
+        encode_token(uuid::Uuid::new_v4(), "test@example.com", "subscriber", secret).unwrap()
+    }
+
     // ── Request helper ────────────────────────────────────────────────────────
 
     async fn get_json(
         app: axum::Router,
         uri: &str,
     ) -> (StatusCode, serde_json::Value) {
+        let token = test_token();
         let response = app
             .oneshot(
                 Request::builder()
                     .uri(uri)
+                    .header("Authorization", format!("Bearer {token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -275,6 +285,123 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(body["disclaimer"].as_str().unwrap().len() > 20);
         assert_eq!(body["sector"], "technology");
+    }
+
+    #[tokio::test]
+    async fn screener_response_has_model_metadata() {
+        let server = MockServer::start().await;
+        mount_income(&server, "[]").await;
+        mount_balance(&server, "[]").await;
+        mount_cashflow(&server, "[]").await;
+        mount_ratios(&server, "[]").await;
+        mount_key_metrics(&server, "[]").await;
+        mount_prices(&server, "SPY", "[]").await;
+
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let (status, body) = get_json(app, "/api/screener/technology").await;
+
+        assert_eq!(status, StatusCode::OK);
+        // New fields: scoring_model, score_labels (4 elements), score_weights (4 elements)
+        assert!(body["scoring_model"].as_str().is_some());
+        let labels = body["score_labels"].as_array().unwrap();
+        let weights = body["score_weights"].as_array().unwrap();
+        assert_eq!(labels.len(), 4);
+        assert_eq!(weights.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn screener_technology_uses_standard_model() {
+        let server = MockServer::start().await;
+        mount_income(&server, "[]").await;
+        mount_balance(&server, "[]").await;
+        mount_cashflow(&server, "[]").await;
+        mount_ratios(&server, "[]").await;
+        mount_key_metrics(&server, "[]").await;
+        mount_prices(&server, "SPY", "[]").await;
+
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let (status, body) = get_json(app, "/api/screener/technology").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["scoring_model"], "Standard");
+        // Standard model score_labels[0] is Piotroski
+        assert!(body["score_labels"][0].as_str().unwrap().contains("Piotroski"));
+    }
+
+    #[tokio::test]
+    async fn screener_financials_uses_financials_model() {
+        let server = MockServer::start().await;
+        mount_income(&server, "[]").await;
+        mount_balance(&server, "[]").await;
+        mount_cashflow(&server, "[]").await;
+        mount_ratios(&server, "[]").await;
+        mount_key_metrics(&server, "[]").await;
+        mount_prices(&server, "SPY", "[]").await;
+
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let (status, body) = get_json(app, "/api/screener/financials").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["scoring_model"], "Financials");
+        // Financials model score_labels[0] is ROE
+        assert!(body["score_labels"][0].as_str().unwrap().contains("Return on Equity"));
+        // Weights sum check: "35%", "25%", "25%", "15%"
+        assert_eq!(body["score_weights"][0], "35%");
+    }
+
+    #[tokio::test]
+    async fn screener_real_estate_uses_real_estate_model() {
+        let server = MockServer::start().await;
+        mount_income(&server, "[]").await;
+        mount_balance(&server, "[]").await;
+        mount_cashflow(&server, "[]").await;
+        mount_ratios(&server, "[]").await;
+        mount_key_metrics(&server, "[]").await;
+        mount_prices(&server, "SPY", "[]").await;
+
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let (status, body) = get_json(app, "/api/screener/real-estate").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["scoring_model"], "Real Estate");
+        assert!(body["score_labels"][0].as_str().unwrap().contains("Dividend"));
+    }
+
+    #[tokio::test]
+    async fn screener_energy_uses_energy_model() {
+        let server = MockServer::start().await;
+        mount_income(&server, "[]").await;
+        mount_balance(&server, "[]").await;
+        mount_cashflow(&server, "[]").await;
+        mount_ratios(&server, "[]").await;
+        mount_key_metrics(&server, "[]").await;
+        mount_prices(&server, "SPY", "[]").await;
+
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let (status, body) = get_json(app, "/api/screener/energy").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["scoring_model"], "Energy");
+        assert!(body["score_labels"][1].as_str().unwrap().contains("FCF"));
+        assert_eq!(body["score_weights"][1], "30%");
+    }
+
+    #[tokio::test]
+    async fn screener_consumer_staples_uses_dividend_model() {
+        let server = MockServer::start().await;
+        mount_income(&server, "[]").await;
+        mount_balance(&server, "[]").await;
+        mount_cashflow(&server, "[]").await;
+        mount_ratios(&server, "[]").await;
+        mount_key_metrics(&server, "[]").await;
+        mount_prices(&server, "SPY", "[]").await;
+
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let (status, body) = get_json(app, "/api/screener/consumer-staples").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["scoring_model"], "Dividend");
+        assert!(body["score_labels"][0].as_str().unwrap().contains("Dividend"));
     }
 
     // ── Mount helpers ─────────────────────────────────────────────────────────

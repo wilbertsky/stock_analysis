@@ -190,16 +190,20 @@ pub struct MomentumResponse {
 // ── Sector Screener ───────────────────────────────────────────────────────────
 
 /// A single stock's scores within a sector screener result.
+/// All four scores are normalized 0–100. Their meaning depends on the sector
+/// scoring model (see `score_labels` and `score_weights` on the response).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ScreenerEntry {
     pub ticker: String,
-    pub piotroski_score: u8,
-    pub quality_score: f64,
-    pub momentum_score: f64,
-    /// DCF value signal: 100 = below margin of safety, 50 = below intrinsic value,
-    /// 25 = within 1.5× intrinsic value, 0 = above 1.5× intrinsic value
-    pub value_signal: f64,
-    /// Weighted composite: piotroski 30% + quality 25% + value 25% + momentum 20%
+    /// Score A (0–100) — primary signal; see `score_labels[0]`
+    pub score_a: f64,
+    /// Score B (0–100) — see `score_labels[1]`
+    pub score_b: f64,
+    /// Score C (0–100) — see `score_labels[2]`
+    pub score_c: f64,
+    /// Score D (0–100) — see `score_labels[3]`
+    pub score_d: f64,
+    /// Weighted composite of all four scores (0–100)
     pub composite_score: f64,
     /// Relative score tier based on composite_score. For educational use only — not a
     /// recommendation to buy or sell.
@@ -210,6 +214,12 @@ pub struct ScreenerEntry {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SectorScreenerResponse {
     pub sector: String,
+    /// Name of the scoring model applied (e.g. "Standard", "Financials", "Real Estate")
+    pub scoring_model: String,
+    /// Human-readable labels for score_a, score_b, score_c, score_d respectively
+    pub score_labels: Vec<String>,
+    /// Percentage weight strings for each score slot (e.g. ["30%", "25%", "25%", "20%"])
+    pub score_weights: Vec<String>,
     pub stocks_analyzed: usize,
     /// Sorted by composite_score descending
     pub results: Vec<ScreenerEntry>,

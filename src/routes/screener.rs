@@ -11,6 +11,7 @@ use crate::{
     calculations,
     error::AppError,
     models::{FundamentalsYear, ScreenerEntry, SectorScreenerResponse},
+    providers::Providers,
     sectors,
     state::AppState,
 };
@@ -23,24 +24,85 @@ const DISCLAIMER: &str = "Scores are calculated from publicly available financia
 /// Maximum number of tickers to score per sector after market-cap pre-filtering.
 const SCORE_TOP_N: usize = 20;
 
+// ── Sector model definitions ──────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug)]
+enum SectorModel {
+    /// Piotroski 30% + Quality 25% + DCF Value 25% + Momentum 20%
+    Standard,
+    /// ROE Quality 35% + P/B Value 25% + Momentum 25% + Debt Safety 15%
+    Financials,
+    /// Dividend Quality 35% + P/B Value 25% + Momentum 25% + Debt Safety 15%
+    RealEstate,
+    /// Piotroski 25% + FCF Yield 30% + Momentum 30% + Quality 15%
+    Energy,
+    /// Dividend Quality 30% + Quality 25% + DCF Value 25% + Momentum 20%
+    Dividend,
+}
+
+impl SectorModel {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Standard => "Standard",
+            Self::Financials => "Financials",
+            Self::RealEstate => "Real Estate",
+            Self::Energy => "Energy",
+            Self::Dividend => "Dividend",
+        }
+    }
+
+    fn labels(&self) -> Vec<String> {
+        let labels: &[&str] = match self {
+            Self::Standard => &["Piotroski F-Score", "Business Quality", "DCF Value", "Momentum vs SPY"],
+            Self::Financials => &["Return on Equity", "Price-to-Book Value", "Momentum vs SPY", "Debt Safety"],
+            Self::RealEstate => &["Dividend Quality", "Price-to-Book Value", "Momentum vs SPY", "Debt Safety"],
+            Self::Energy => &["Piotroski F-Score", "FCF Yield", "Momentum vs SPY", "Business Quality"],
+            Self::Dividend => &["Dividend Quality", "Business Quality", "DCF Value", "Momentum vs SPY"],
+        };
+        labels.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn weights(&self) -> Vec<String> {
+        let weights: &[&str] = match self {
+            Self::Standard  => &["30%", "25%", "25%", "20%"],
+            Self::Financials => &["35%", "25%", "25%", "15%"],
+            Self::RealEstate => &["35%", "25%", "25%", "15%"],
+            Self::Energy     => &["25%", "30%", "30%", "15%"],
+            Self::Dividend   => &["30%", "25%", "25%", "20%"],
+        };
+        weights.iter().map(|s| s.to_string()).collect()
+    }
+}
+
+fn sector_model(sector: &str) -> SectorModel {
+    match sector {
+        "financials" => SectorModel::Financials,
+        "real-estate" => SectorModel::RealEstate,
+        "energy" => SectorModel::Energy,
+        "consumer-staples" | "utilities" => SectorModel::Dividend,
+        _ => SectorModel::Standard,
+    }
+}
+
+// ── Route handler ─────────────────────────────────────────────────────────────
+
 #[utoipa::path(
     get,
     path = "/api/screener/{sector}",
     tag = "screener",
     params(("sector" = String, Path, description = "Sector name, e.g. technology, healthcare, financials")),
     description = "Screens S&P 500 stocks within a sector and ranks them by a weighted composite \
-        score combining four factor investing signals: \
-        Piotroski F-Score (30%) — accounting-based quality; \
-        Business Quality (25%) — gross margin, ROE, and debt levels; \
-        DCF Value Signal (25%) — how the current price compares to the calculated intrinsic value \
-        and margin of safety price (Benjamin Graham); \
-        Momentum (20%) — relative price performance vs. the S&P 500 over 3/6/12 months. \
+        score. The scoring model adapts to the sector: \
+        Standard sectors (technology, healthcare, industrials, etc.) use Piotroski F-Score (30%), \
+        Business Quality (25%), DCF Value Signal (25%), and Momentum vs SPY (20%). \
+        Financials use Return on Equity (35%), Price-to-Book (25%), Momentum (25%), Debt Safety (15%). \
+        Real Estate uses Dividend Quality (35%), Price-to-Book (25%), Momentum (25%), Debt Safety (15%). \
+        Energy uses Piotroski (25%), FCF Yield (30%), Momentum (30%), Quality (15%). \
+        Consumer Staples and Utilities use Dividend Quality (30%), Business Quality (25%), DCF Value (25%), Momentum (20%). \
         Supported sectors: technology, healthcare, financials, energy, consumer-staples, \
         consumer-discretionary, industrials, materials, real-estate, communication, utilities. \
-        Stocks are pre-filtered to the top market-cap names in the sector, then scored. \
-        Stocks for which data is unavailable are omitted from results. \
-        Expect this endpoint to take 15–30 seconds as it fetches and scores multiple tickers. \
-        A disclaimer field is included in every response.",
+        Stocks are pre-filtered to the top market-cap names, then scored. \
+        Expect this endpoint to take 15–30 seconds. A disclaimer field is included in every response.",
     responses(
         (status = 200, description = "Ranked stock picks for the sector", body = SectorScreenerResponse),
         (status = 422, description = "Unknown sector name", body = crate::error::ErrorBody),
@@ -79,11 +141,18 @@ pub async fn get_sector_top_picks(
             .collect()
     };
 
+    let model = sector_model(&sector);
+
+    // For the screener we use EDGAR/Yahoo as primary and the server-level FMP
+    // key as a fallback. This ensures fundamental data is always available even
+    // if EDGAR's CIK map hasn't loaded or a ticker lookup fails.
+    let providers = Arc::new(state.providers.with_fmp(state.fmp.clone()));
+
     // Pre-filter to top SCORE_TOP_N by market cap to keep scoring time reasonable.
-    let tickers_to_score = top_by_market_cap(&state, &candidate_tickers).await;
+    let tickers_to_score = top_by_market_cap(&providers, &candidate_tickers).await;
 
     // Fetch SPY prices once — shared benchmark for all momentum calculations.
-    let spy_prices = state.providers.historical_prices("SPY", 260).await.unwrap_or_default();
+    let spy_prices = providers.historical_prices("SPY", 260).await.unwrap_or_default();
     let spy_prices = Arc::new(spy_prices);
 
     // Score each ticker concurrently, limiting to 5 in-flight at a time.
@@ -91,13 +160,13 @@ pub async fn get_sector_top_picks(
     let mut set = JoinSet::new();
 
     for ticker in tickers_to_score {
-        let state = state.clone();
+        let providers = providers.clone();
         let spy_prices = spy_prices.clone();
         let sem = sem.clone();
 
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            score_ticker(&state, &ticker, &spy_prices).await
+            score_ticker(&providers, &ticker, &spy_prices, model).await
         });
     }
 
@@ -117,6 +186,9 @@ pub async fn get_sector_top_picks(
     let stocks_analyzed = results.len();
     Ok(Json(SectorScreenerResponse {
         sector,
+        scoring_model: model.name().to_owned(),
+        score_labels: model.labels(),
+        score_weights: model.weights(),
         stocks_analyzed,
         results,
         disclaimer: DISCLAIMER.to_owned(),
@@ -124,13 +196,10 @@ pub async fn get_sector_top_picks(
 }
 
 /// Returns up to `SCORE_TOP_N` tickers sorted by market cap descending.
-/// Fetches market caps from Yahoo Finance in one batch request.
-/// If market caps cannot be fetched, returns the first `SCORE_TOP_N` from the input list.
-async fn top_by_market_cap(state: &AppState, tickers: &[String]) -> Vec<String> {
-    let caps = state.providers.batch_market_caps(tickers).await;
+async fn top_by_market_cap(providers: &Providers, tickers: &[String]) -> Vec<String> {
+    let caps = providers.batch_market_caps(tickers).await;
 
     if caps.is_empty() {
-        // Fallback: take first SCORE_TOP_N alphabetically (same order as dataset)
         return tickers.iter().take(SCORE_TOP_N).cloned().collect();
     }
 
@@ -147,29 +216,52 @@ async fn top_by_market_cap(state: &AppState, tickers: &[String]) -> Vec<String> 
         .collect()
 }
 
-/// Fetch and score a single ticker. Returns None if any required data is unavailable.
+/// Fetch and score a single ticker using the given sector model. Returns None if required data
+/// is unavailable.
 async fn score_ticker(
-    state: &AppState,
+    providers: &Providers,
     ticker: &str,
     spy_prices: &[crate::fmp::HistoricalPrice],
+    model: SectorModel,
 ) -> Option<ScreenerEntry> {
     let (income_r, balance_r, cashflow_r, ratios_r, km_r, prices_r) = tokio::join!(
-        state.providers.income_statements(ticker, 5),
-        state.providers.balance_sheets(ticker, 2),
-        state.providers.cash_flow_statements(ticker, 2),
-        state.providers.ratios(ticker, 5),
-        state.providers.key_metrics(ticker, 5),
-        state.providers.historical_prices(ticker, 260),
+        providers.income_statements(ticker, 5),
+        providers.balance_sheets(ticker, 2),
+        providers.cash_flow_statements(ticker, 2),
+        providers.ratios(ticker, 5),
+        providers.key_metrics(ticker, 5),
+        providers.historical_prices(ticker, 260),
     );
 
-    let income = income_r.ok()?;
-    let balance = balance_r.ok()?;
-    let cashflow = cashflow_r.ok()?;
+    let income = match income_r {
+        Ok(d) if !d.is_empty() => d,
+        Ok(_) => { tracing::warn!("{ticker}: income statements empty"); return None; }
+        Err(e) => { tracing::warn!("{ticker}: income statements error: {e}"); return None; }
+    };
+    let balance = match balance_r {
+        Ok(d) if !d.is_empty() => d,
+        Ok(_) => { tracing::warn!("{ticker}: balance sheets empty"); return None; }
+        Err(e) => { tracing::warn!("{ticker}: balance sheets error: {e}"); return None; }
+    };
+    let cashflow = match cashflow_r {
+        Ok(d) if !d.is_empty() => d,
+        Ok(_) => { tracing::warn!("{ticker}: cash flows empty"); return None; }
+        Err(e) => { tracing::warn!("{ticker}: cash flows error: {e}"); return None; }
+    };
     let ratios = ratios_r.unwrap_or_default();
     let km = km_r.unwrap_or_default();
-    let prices = prices_r.ok()?;
+    let prices = match prices_r {
+        Ok(d) if !d.is_empty() => d,
+        Ok(_) => { tracing::warn!("{ticker}: prices empty"); return None; }
+        Err(e) => { tracing::warn!("{ticker}: prices error: {e}"); return None; }
+    };
 
-    // Build aligned FundamentalsYear for value signal (oldest → newest)
+    let current_price = match prices.first().and_then(|p| p.price) {
+        Some(p) => p,
+        None => { tracing::warn!("{ticker}: first price entry has no price"); return None; }
+    };
+
+    // Build FundamentalsYear slice (oldest → newest) for DCF value signal.
     let ratio_by_date: HashMap<&str, &crate::fmp::Ratio> =
         ratios.iter().map(|r| (r.date.as_str(), r)).collect();
     let km_by_date: HashMap<&str, &crate::fmp::KeyMetrics> =
@@ -192,22 +284,63 @@ async fn score_ticker(
         .collect();
     years.reverse(); // oldest → newest
 
-    let current_price = prices.first()?.price?;
+    // Compute all individual signals we might need across models.
+    let piotroski_0_100 = {
+        let p = calculations::piotroski_f_score(ticker, &income, &balance, &cashflow);
+        p.score as f64 / 9.0 * 100.0
+    };
+    let quality = calculations::quality_score(ticker, &income, &ratios, &km).quality_score;
+    let momentum = calculations::momentum_score(ticker, &prices, spy_prices).momentum_score;
+    let dcf_value = calculations::value_signal(ticker, &years, current_price);
+    let roe_quality = calculations::roe_quality_score(&km);
+    let pb_value = calculations::pb_value_score(&ratios, current_price);
+    let debt_safety = calculations::debt_safety_score(&ratios);
+    let dividend_quality = calculations::dividend_quality_score(&ratios);
+    let fcf_yield = calculations::fcf_yield_score(&ratios, current_price);
 
-    let piotroski = calculations::piotroski_f_score(ticker, &income, &balance, &cashflow);
-    let quality = calculations::quality_score(ticker, &income, &ratios, &km);
-    let momentum = calculations::momentum_score(ticker, &prices, spy_prices);
-    let val_signal = calculations::value_signal(ticker, &years, current_price);
-
-    let piotroski_score = piotroski.score;
-    let quality_score = quality.quality_score;
-    let momentum_score = momentum.momentum_score;
-
-    // Weighted composite: piotroski 30% + quality 25% + value 25% + momentum 20%
-    let composite_score = (piotroski_score as f64 / 9.0) * 100.0 * 0.30
-        + quality_score * 0.25
-        + val_signal * 0.25
-        + momentum_score * 0.20;
+    // Assign score slots and compute weighted composite per model.
+    let (score_a, score_b, score_c, score_d, composite_score) = match model {
+        SectorModel::Standard => {
+            let a = piotroski_0_100;
+            let b = quality;
+            let c = dcf_value;
+            let d = momentum;
+            let comp = a * 0.30 + b * 0.25 + c * 0.25 + d * 0.20;
+            (a, b, c, d, comp)
+        }
+        SectorModel::Financials => {
+            let a = roe_quality;
+            let b = pb_value;
+            let c = momentum;
+            let d = debt_safety;
+            let comp = a * 0.35 + b * 0.25 + c * 0.25 + d * 0.15;
+            (a, b, c, d, comp)
+        }
+        SectorModel::RealEstate => {
+            let a = dividend_quality;
+            let b = pb_value;
+            let c = momentum;
+            let d = debt_safety;
+            let comp = a * 0.35 + b * 0.25 + c * 0.25 + d * 0.15;
+            (a, b, c, d, comp)
+        }
+        SectorModel::Energy => {
+            let a = piotroski_0_100;
+            let b = fcf_yield;
+            let c = momentum;
+            let d = quality;
+            let comp = a * 0.25 + b * 0.30 + c * 0.30 + d * 0.15;
+            (a, b, c, d, comp)
+        }
+        SectorModel::Dividend => {
+            let a = dividend_quality;
+            let b = quality;
+            let c = dcf_value;
+            let d = momentum;
+            let comp = a * 0.30 + b * 0.25 + c * 0.25 + d * 0.20;
+            (a, b, c, d, comp)
+        }
+    };
 
     let score_tier = if composite_score >= 70.0 {
         "High".to_owned()
@@ -221,10 +354,10 @@ async fn score_ticker(
 
     Some(ScreenerEntry {
         ticker: ticker.to_owned(),
-        piotroski_score,
-        quality_score,
-        momentum_score,
-        value_signal: val_signal,
+        score_a,
+        score_b,
+        score_c,
+        score_d,
         composite_score,
         score_tier,
     })

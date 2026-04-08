@@ -69,6 +69,13 @@ impl AppState {
         }
     }
 
+    /// Returns a Providers instance that uses EDGAR/Yahoo as primary sources and the
+    /// server-level FMP client as a fallback. Use this for all authenticated endpoints
+    /// so that data is always available even when EDGAR is missing a ticker or field.
+    pub fn providers_with_server_fmp(&self) -> Providers {
+        self.providers.with_fmp(self.fmp.clone())
+    }
+
     /// Build an FmpClient scoped to a specific user's API key (if they have one stored),
     /// falling back to the global client. Callers should call this to get the right key
     /// for authenticated portfolio/analysis requests.

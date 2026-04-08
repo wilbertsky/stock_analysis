@@ -460,6 +460,102 @@ pub fn peg_ratio(
     })
 }
 
+// ── Sector-Specific Score Helpers ─────────────────────────────────────────────
+
+/// ROE quality score 0–100. Used as the primary signal in the Financials model.
+/// High ROE indicates strong profitability for a bank or financial firm.
+/// Thresholds: ≥20% = 100, ≥15% = 80, ≥10% = 60, ≥7% = 40, ≥4% = 20, else 0.
+pub fn roe_quality_score(km: &[KeyMetrics]) -> f64 {
+    let roe = km.first().and_then(|k| k.return_on_equity).unwrap_or(0.0);
+    if roe >= 0.20 { 100.0 }
+    else if roe >= 0.15 { 80.0 }
+    else if roe >= 0.10 { 60.0 }
+    else if roe >= 0.07 { 40.0 }
+    else if roe >= 0.04 { 20.0 }
+    else { 0.0 }
+}
+
+/// Price-to-Book value score 0–100. Lower P/B = higher score (cheaper relative to assets).
+/// P/B is computed as current_price ÷ book_value_per_share from the most recent ratio period.
+/// Thresholds: ≤1.0 = 100, ≤1.5 = 80, ≤2.0 = 60, ≤3.0 = 40, ≤5.0 = 20, else 0.
+pub fn pb_value_score(ratios: &[Ratio], current_price: f64) -> f64 {
+    let bvps = match ratios.first().and_then(|r| r.book_value_per_share) {
+        Some(v) if v > 0.0 => v,
+        _ => return 0.0,
+    };
+    let pb = current_price / bvps;
+    if pb <= 1.0 { 100.0 }
+    else if pb <= 1.5 { 80.0 }
+    else if pb <= 2.0 { 60.0 }
+    else if pb <= 3.0 { 40.0 }
+    else if pb <= 5.0 { 20.0 }
+    else { 0.0 }
+}
+
+/// Debt safety score 0–100 based on debt-to-equity ratio.
+/// Lower leverage = higher score. Debt/Equity < 0.3 = 100, < 0.5 = 80, < 1.0 = 60,
+/// < 2.0 = 40, < 3.0 = 20, else 0. Negative D/E (more equity than debt) scores 100.
+pub fn debt_safety_score(ratios: &[Ratio]) -> f64 {
+    let de = match ratios.first().and_then(|r| r.debt_to_equity_ratio) {
+        Some(v) => v,
+        None => return 0.0,
+    };
+    if de < 0.0 { 100.0 }  // net cash position
+    else if de < 0.30 { 100.0 }
+    else if de < 0.50 { 80.0 }
+    else if de < 1.00 { 60.0 }
+    else if de < 2.00 { 40.0 }
+    else if de < 3.00 { 20.0 }
+    else { 0.0 }
+}
+
+/// Dividend quality score 0–100. Rewards meaningful yield with a sustainable payout ratio.
+/// Used for Real Estate and Dividend-oriented sector models (Consumer Staples, Utilities).
+/// Yield component: ≥5% = 50, ≥4% = 40, ≥3% = 30, ≥1.5% = 15, else 0.
+/// Payout sustainability: < 50% = 30, < 65% = 25, < 80% = 15, else 0.
+/// No dividend paid = 0 overall.
+pub fn dividend_quality_score(ratios: &[Ratio]) -> f64 {
+    let dps = ratios.first().and_then(|r| r.dividend_per_share).unwrap_or(0.0);
+    if dps <= 0.0 {
+        return 0.0;
+    }
+    let yield_pct = ratios.first().and_then(|r| r.dividend_yield_percentage).unwrap_or(0.0);
+    let payout = ratios.first().and_then(|r| r.dividend_payout_ratio).unwrap_or(1.0);
+
+    let yield_score: f64 = if yield_pct >= 5.0 { 50.0 }
+        else if yield_pct >= 4.0 { 40.0 }
+        else if yield_pct >= 3.0 { 30.0 }
+        else if yield_pct >= 1.5 { 15.0 }
+        else { 0.0 };
+
+    let payout_score: f64 = if payout < 0.50 { 30.0 }
+        else if payout < 0.65 { 25.0 }
+        else if payout < 0.80 { 15.0 }
+        else { 0.0 };
+
+    (yield_score + payout_score).min(100.0)
+}
+
+/// Free cash flow yield score 0–100. Rewards high FCF relative to price.
+/// FCF yield = free_cash_flow_per_share ÷ current_price. Used in the Energy model.
+/// Thresholds: ≥10% = 100, ≥7% = 80, ≥5% = 60, ≥3% = 40, ≥1% = 20, else 0.
+pub fn fcf_yield_score(ratios: &[Ratio], current_price: f64) -> f64 {
+    let fcfps = match ratios.first().and_then(|r| r.free_cash_flow_per_share) {
+        Some(v) if v > 0.0 => v,
+        _ => return 0.0,
+    };
+    if current_price <= 0.0 {
+        return 0.0;
+    }
+    let yield_pct = fcfps / current_price * 100.0;
+    if yield_pct >= 10.0 { 100.0 }
+    else if yield_pct >= 7.0 { 80.0 }
+    else if yield_pct >= 5.0 { 60.0 }
+    else if yield_pct >= 3.0 { 40.0 }
+    else if yield_pct >= 1.0 { 20.0 }
+    else { 0.0 }
+}
+
 // ── Unit Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -830,6 +926,220 @@ mod tests {
         let spy   = prices_with(260, 500.0, &[(63, 430.0), (126, 400.0), (252, 350.0)]);
         let r = momentum_score("T", &stock, &spy);
         assert!(r.momentum_score < 50.0);
+    }
+
+    // ── roe_quality_score ─────────────────────────────────────────────────────
+
+    fn km_with_roe(roe: f64) -> KeyMetrics {
+        KeyMetrics { date: "2024-01-01".to_owned(), return_on_invested_capital: None, return_on_equity: Some(roe) }
+    }
+
+    #[test]
+    fn roe_score_at_or_above_20_pct_is_100() {
+        assert_eq!(roe_quality_score(&[km_with_roe(0.20)]), 100.0);
+        assert_eq!(roe_quality_score(&[km_with_roe(0.50)]), 100.0);
+    }
+
+    #[test]
+    fn roe_score_tiers_map_correctly() {
+        assert_eq!(roe_quality_score(&[km_with_roe(0.15)]), 80.0);
+        assert_eq!(roe_quality_score(&[km_with_roe(0.10)]), 60.0);
+        assert_eq!(roe_quality_score(&[km_with_roe(0.07)]), 40.0);
+        assert_eq!(roe_quality_score(&[km_with_roe(0.04)]), 20.0);
+        assert_eq!(roe_quality_score(&[km_with_roe(0.01)]), 0.0);
+    }
+
+    #[test]
+    fn roe_score_negative_roe_is_zero() {
+        assert_eq!(roe_quality_score(&[km_with_roe(-0.05)]), 0.0);
+    }
+
+    #[test]
+    fn roe_score_empty_km_is_zero() {
+        assert_eq!(roe_quality_score(&[]), 0.0);
+    }
+
+    // ── pb_value_score ────────────────────────────────────────────────────────
+
+    fn ratio_with_bvps(bvps: f64) -> Ratio {
+        Ratio {
+            date: "2024-01-01".to_owned(),
+            book_value_per_share: Some(bvps),
+            free_cash_flow_per_share: None,
+            price_to_earnings_ratio: None,
+            dividend_yield_percentage: None,
+            dividend_payout_ratio: None,
+            dividend_per_share: None,
+            debt_to_equity_ratio: None,
+        }
+    }
+
+    #[test]
+    fn pb_score_at_or_below_book_value_is_100() {
+        // price $10, BVPS $10 → P/B = 1.0
+        assert_eq!(pb_value_score(&[ratio_with_bvps(10.0)], 10.0), 100.0);
+        // price $8, BVPS $10 → P/B = 0.8
+        assert_eq!(pb_value_score(&[ratio_with_bvps(10.0)], 8.0), 100.0);
+    }
+
+    #[test]
+    fn pb_score_tiers_map_correctly() {
+        // BVPS = 10; vary price to hit each tier
+        assert_eq!(pb_value_score(&[ratio_with_bvps(10.0)], 14.0), 80.0); // P/B 1.4
+        assert_eq!(pb_value_score(&[ratio_with_bvps(10.0)], 18.0), 60.0); // P/B 1.8
+        assert_eq!(pb_value_score(&[ratio_with_bvps(10.0)], 25.0), 40.0); // P/B 2.5
+        assert_eq!(pb_value_score(&[ratio_with_bvps(10.0)], 40.0), 20.0); // P/B 4.0
+        assert_eq!(pb_value_score(&[ratio_with_bvps(10.0)], 60.0),  0.0); // P/B 6.0
+    }
+
+    #[test]
+    fn pb_score_zero_bvps_is_zero() {
+        assert_eq!(pb_value_score(&[ratio_with_bvps(0.0)], 100.0), 0.0);
+    }
+
+    #[test]
+    fn pb_score_negative_bvps_is_zero() {
+        assert_eq!(pb_value_score(&[ratio_with_bvps(-5.0)], 100.0), 0.0);
+    }
+
+    #[test]
+    fn pb_score_no_ratios_is_zero() {
+        assert_eq!(pb_value_score(&[], 100.0), 0.0);
+    }
+
+    // ── debt_safety_score ─────────────────────────────────────────────────────
+
+    fn ratio_with_de(de: f64) -> Ratio {
+        Ratio {
+            date: "2024-01-01".to_owned(),
+            book_value_per_share: None,
+            free_cash_flow_per_share: None,
+            price_to_earnings_ratio: None,
+            dividend_yield_percentage: None,
+            dividend_payout_ratio: None,
+            dividend_per_share: None,
+            debt_to_equity_ratio: Some(de),
+        }
+    }
+
+    #[test]
+    fn debt_safety_net_cash_position_is_100() {
+        assert_eq!(debt_safety_score(&[ratio_with_de(-0.5)]), 100.0);
+    }
+
+    #[test]
+    fn debt_safety_tiers_map_correctly() {
+        assert_eq!(debt_safety_score(&[ratio_with_de(0.10)]), 100.0); // < 0.30
+        assert_eq!(debt_safety_score(&[ratio_with_de(0.40)]),  80.0); // < 0.50
+        assert_eq!(debt_safety_score(&[ratio_with_de(0.75)]),  60.0); // < 1.00
+        assert_eq!(debt_safety_score(&[ratio_with_de(1.50)]),  40.0); // < 2.00
+        assert_eq!(debt_safety_score(&[ratio_with_de(2.50)]),  20.0); // < 3.00
+        assert_eq!(debt_safety_score(&[ratio_with_de(4.00)]),   0.0); // ≥ 3.00
+    }
+
+    #[test]
+    fn debt_safety_missing_de_is_zero() {
+        let r = Ratio {
+            date: "2024-01-01".to_owned(),
+            book_value_per_share: None,
+            free_cash_flow_per_share: None,
+            price_to_earnings_ratio: None,
+            dividend_yield_percentage: None,
+            dividend_payout_ratio: None,
+            dividend_per_share: None,
+            debt_to_equity_ratio: None,
+        };
+        assert_eq!(debt_safety_score(&[r]), 0.0);
+    }
+
+    // ── dividend_quality_score ────────────────────────────────────────────────
+
+    fn ratio_for_div(yield_pct: f64, payout: f64, dps: f64) -> Ratio {
+        Ratio {
+            date: "2024-01-01".to_owned(),
+            book_value_per_share: None,
+            free_cash_flow_per_share: None,
+            price_to_earnings_ratio: None,
+            dividend_yield_percentage: Some(yield_pct),
+            dividend_payout_ratio: Some(payout),
+            dividend_per_share: Some(dps),
+            debt_to_equity_ratio: None,
+        }
+    }
+
+    #[test]
+    fn dividend_quality_no_dividend_is_zero() {
+        assert_eq!(dividend_quality_score(&[ratio_for_div(0.0, 0.0, 0.0)]), 0.0);
+        assert_eq!(dividend_quality_score(&[]), 0.0);
+    }
+
+    #[test]
+    fn dividend_quality_high_yield_sustainable_payout() {
+        // yield 5% (50 pts) + payout 40% (30 pts) = 80
+        let score = dividend_quality_score(&[ratio_for_div(5.0, 0.40, 2.00)]);
+        assert_eq!(score, 80.0);
+    }
+
+    #[test]
+    fn dividend_quality_mid_yield_high_payout() {
+        // yield 3% (30 pts) + payout 70% (15 pts) = 45
+        let score = dividend_quality_score(&[ratio_for_div(3.0, 0.70, 1.00)]);
+        assert_eq!(score, 45.0);
+    }
+
+    #[test]
+    fn dividend_quality_capped_at_100() {
+        // yield 5% (50) + payout 40% (30) = 80; cannot exceed 100
+        let score = dividend_quality_score(&[ratio_for_div(5.0, 0.40, 3.00)]);
+        assert!(score <= 100.0);
+    }
+
+    // ── fcf_yield_score ───────────────────────────────────────────────────────
+
+    fn ratio_with_fcfps(fcfps: f64) -> Ratio {
+        Ratio {
+            date: "2024-01-01".to_owned(),
+            book_value_per_share: None,
+            free_cash_flow_per_share: Some(fcfps),
+            price_to_earnings_ratio: None,
+            dividend_yield_percentage: None,
+            dividend_payout_ratio: None,
+            dividend_per_share: None,
+            debt_to_equity_ratio: None,
+        }
+    }
+
+    #[test]
+    fn fcf_yield_score_at_or_above_10_pct_is_100() {
+        // FCF/share $10, price $100 → yield 10%
+        assert_eq!(fcf_yield_score(&[ratio_with_fcfps(10.0)], 100.0), 100.0);
+        // FCF/share $15, price $100 → yield 15%
+        assert_eq!(fcf_yield_score(&[ratio_with_fcfps(15.0)], 100.0), 100.0);
+    }
+
+    #[test]
+    fn fcf_yield_score_tiers_map_correctly() {
+        // price = 100, vary FCF/share to hit each tier
+        assert_eq!(fcf_yield_score(&[ratio_with_fcfps(8.0)], 100.0),  80.0); // 8%
+        assert_eq!(fcf_yield_score(&[ratio_with_fcfps(6.0)], 100.0),  60.0); // 6%
+        assert_eq!(fcf_yield_score(&[ratio_with_fcfps(4.0)], 100.0),  40.0); // 4%
+        assert_eq!(fcf_yield_score(&[ratio_with_fcfps(2.0)], 100.0),  20.0); // 2%
+        assert_eq!(fcf_yield_score(&[ratio_with_fcfps(0.5)], 100.0),   0.0); // 0.5%
+    }
+
+    #[test]
+    fn fcf_yield_score_negative_fcf_is_zero() {
+        assert_eq!(fcf_yield_score(&[ratio_with_fcfps(-5.0)], 100.0), 0.0);
+    }
+
+    #[test]
+    fn fcf_yield_score_zero_price_is_zero() {
+        assert_eq!(fcf_yield_score(&[ratio_with_fcfps(5.0)], 0.0), 0.0);
+    }
+
+    #[test]
+    fn fcf_yield_score_no_ratios_is_zero() {
+        assert_eq!(fcf_yield_score(&[], 100.0), 0.0);
     }
 
     // ── value_signal ──────────────────────────────────────────────────────────
