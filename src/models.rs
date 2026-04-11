@@ -308,9 +308,15 @@ pub struct PublicPortfolioSummary {
     /// Email prefix (before @) of the portfolio owner.
     pub owner: String,
     pub holdings: Vec<HoldingPerformance>,
-    /// Weighted average unrealised return across all holdings (%).
-    /// None only when the portfolio has no holdings.
+    /// Weighted average unrealised return across open holdings (%).
+    /// None only when the portfolio has no open holdings.
     pub total_return_pct: Option<f64>,
+    /// Total unrealized dollar gain across open holdings.
+    pub total_unrealized_gain: f64,
+    /// Closed positions and cumulative realized P&L.
+    pub realized: RealizedGainsSummary,
+    /// Combined ranking score: realized_gain + unrealized_dollar_gain.
+    pub combined_gain: f64,
 }
 
 // ── Feedback ──────────────────────────────────────────────────────────────────
@@ -410,6 +416,39 @@ pub struct HoldingPerformance {
     pub return_pct: f64,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SellHoldingRequest {
+    /// Number of shares to sell. Must be ≤ the holding's current share count.
+    pub shares: f64,
+    /// Sale price per share (USD). When omitted the current market price is fetched.
+    pub price: Option<f64>,
+    /// Sale date (YYYY-MM-DD). When omitted today's date/price is used.
+    pub date: Option<chrono::NaiveDate>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RealizedGainRow {
+    pub id: Uuid,
+    pub ticker: String,
+    /// Shares sold in this transaction.
+    pub shares: f64,
+    /// Average cost basis per share at time of sale.
+    pub cost_per_share: f64,
+    /// Sale price per share.
+    pub sale_price: f64,
+    /// (sale_price − cost_per_share) × shares
+    pub realized_gain: f64,
+    pub sold_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RealizedGainsSummary {
+    /// All individual closed positions, newest first.
+    pub rows: Vec<RealizedGainRow>,
+    /// Sum of all realized_gain values (positive = profit, negative = loss).
+    pub total_realized_gain: f64,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PortfolioPerformanceResponse {
     pub portfolio: PortfolioRow,
@@ -417,6 +456,8 @@ pub struct PortfolioPerformanceResponse {
     /// Average return % across holdings (share-weighted where shares are provided,
     /// simple average otherwise). Null if no holdings.
     pub total_return_pct: Option<f64>,
+    /// Closed positions and cumulative realized P&L for this portfolio.
+    pub realized: RealizedGainsSummary,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

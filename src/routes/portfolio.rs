@@ -13,7 +13,7 @@ use crate::{
     models::{
         AddHoldingRequest, CreatePortfolioRequest, HoldingPerformance, HoldingRow,
         ImportHoldingsResponse, ImportRowResult, PortfolioPerformanceResponse, PortfolioRow,
-        PublicPortfolioSummary,
+        PublicPortfolioSummary, RealizedGainRow, RealizedGainsSummary, SellHoldingRequest,
     },
     state::AppState,
 };
@@ -330,7 +330,47 @@ async fn fetch_performance(
         Some(weighted)
     };
 
-    Ok(PortfolioPerformanceResponse { portfolio, holdings, total_return_pct })
+    // Fetch realized gains for this portfolio.
+    let rg_rows = sqlx::query(
+        "SELECT id, ticker,
+                shares::FLOAT8         AS shares,
+                cost_per_share::FLOAT8 AS cost_per_share,
+                sale_price::FLOAT8     AS sale_price,
+                realized_gain::FLOAT8  AS realized_gain,
+                sold_at
+         FROM realized_gains WHERE portfolio_id = $1
+         ORDER BY sold_at DESC",
+    )
+    .bind(portfolio_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let realized_rows: Vec<RealizedGainRow> = rg_rows
+        .iter()
+        .map(|r| {
+            Ok::<_, AppError>(RealizedGainRow {
+                id:             r.try_get("id").map_err(AppError::Db)?,
+                ticker:         r.try_get("ticker").map_err(AppError::Db)?,
+                shares:         r.try_get::<f64, _>("shares").map_err(AppError::Db)?,
+                cost_per_share: r.try_get::<f64, _>("cost_per_share").map_err(AppError::Db)?,
+                sale_price:     r.try_get::<f64, _>("sale_price").map_err(AppError::Db)?,
+                realized_gain:  r.try_get::<f64, _>("realized_gain").map_err(AppError::Db)?,
+                sold_at:        r.try_get("sold_at").map_err(AppError::Db)?,
+            })
+        })
+        .collect::<Result<_, _>>()?;
+
+    let total_realized_gain = realized_rows.iter().map(|r| r.realized_gain).sum();
+
+    Ok(PortfolioPerformanceResponse {
+        portfolio,
+        holdings,
+        total_return_pct,
+        realized: RealizedGainsSummary {
+            rows: realized_rows,
+            total_realized_gain,
+        },
+    })
 }
 
 // ── POST /api/portfolio ───────────────────────────────────────────────────────
@@ -591,6 +631,157 @@ pub async fn remove_holding(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ── POST /api/portfolio/{id}/holdings/{holding_id}/sell ──────────────────────
+
+#[utoipa::path(
+    post,
+    path = "/api/portfolio/{id}/holdings/{holding_id}/sell",
+    tag = "portfolio",
+    params(
+        ("id"         = Uuid, Path, description = "Portfolio UUID"),
+        ("holding_id" = Uuid, Path, description = "Holding UUID"),
+    ),
+    request_body = SellHoldingRequest,
+    description = "Record a (partial or full) sale of a holding. \
+        The cost basis is taken from `price_at_add` on the holding. \
+        For a partial sale the holding's share count is reduced. \
+        For a full sale the holding is removed. \
+        The realized gain is recorded in `realized_gains`.",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Realized gain row", body = RealizedGainRow),
+        (status = 400, description = "Invalid request", body = crate::error::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = crate::error::ErrorBody),
+        (status = 403, description = "Not your portfolio", body = crate::error::ErrorBody),
+        (status = 404, description = "Portfolio or holding not found", body = crate::error::ErrorBody),
+    )
+)]
+pub async fn sell_holding(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, holding_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<SellHoldingRequest>,
+) -> Result<Json<RealizedGainRow>, AppError> {
+    if body.shares <= 0.0 {
+        return Err(AppError::BadRequest("shares must be positive".into()));
+    }
+    assert_owns_portfolio(&state, id, auth.user_id).await?;
+
+    // Fetch the holding to get ticker, cost basis, and current share count.
+    let h_row = sqlx::query(
+        "SELECT ticker, price_at_add::FLOAT8 AS price_at_add, shares::FLOAT8 AS shares
+         FROM portfolio_holdings WHERE id = $1 AND portfolio_id = $2",
+    )
+    .bind(holding_id)
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let ticker: String = h_row.try_get("ticker").map_err(AppError::Db)?;
+    let cost_per_share: f64 = h_row.try_get("price_at_add").map_err(AppError::Db)?;
+    let current_shares: Option<f64> = h_row.try_get("shares").map_err(AppError::Db)?;
+
+    // Validate share count if known.
+    if let Some(owned) = current_shares {
+        if body.shares > owned + 1e-9 {
+            return Err(AppError::BadRequest(format!(
+                "Cannot sell {:.6} shares; holding only has {:.6}",
+                body.shares, owned
+            )));
+        }
+    }
+
+    // Determine sale price.
+    let (sale_price, sold_at) = match body.date {
+        Some(date) => {
+            if date >= Utc::now().date_naive() {
+                return Err(AppError::BadRequest("date must be in the past".into()));
+            }
+            let p = if let Some(override_price) = body.price {
+                override_price
+            } else {
+                state.providers.price_on_date(&ticker, date).await?
+            };
+            let ts = date.and_hms_opt(0, 0, 0)
+                .ok_or_else(|| AppError::BadRequest("Invalid date".into()))?
+                .and_utc();
+            (p, ts)
+        }
+        None => {
+            let p = if let Some(override_price) = body.price {
+                override_price
+            } else {
+                state.providers.quote_price(&ticker).await?
+            };
+            (p, Utc::now())
+        }
+    };
+
+    let realized_gain = (sale_price - cost_per_share) * body.shares;
+
+    // Perform the update and insert in a transaction.
+    let mut tx = state.db.begin().await?;
+
+    // Insert realized gain record.
+    let rg_row = sqlx::query(
+        "INSERT INTO realized_gains (portfolio_id, ticker, shares, cost_per_share, sale_price, realized_gain, sold_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, ticker,
+                   shares::FLOAT8         AS shares,
+                   cost_per_share::FLOAT8 AS cost_per_share,
+                   sale_price::FLOAT8     AS sale_price,
+                   realized_gain::FLOAT8  AS realized_gain,
+                   sold_at",
+    )
+    .bind(id)
+    .bind(&ticker)
+    .bind(body.shares)
+    .bind(cost_per_share)
+    .bind(sale_price)
+    .bind(realized_gain)
+    .bind(sold_at)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    // Reduce or remove the holding.
+    if let Some(owned) = current_shares {
+        let remaining = owned - body.shares;
+        if remaining < 1e-9 {
+            // Full sell — remove the holding.
+            sqlx::query("DELETE FROM portfolio_holdings WHERE id = $1")
+                .bind(holding_id)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            // Partial sell — update share count.
+            sqlx::query("UPDATE portfolio_holdings SET shares = $1 WHERE id = $2")
+                .bind(remaining)
+                .bind(holding_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+    } else {
+        // No share count recorded; treat as full sell.
+        sqlx::query("DELETE FROM portfolio_holdings WHERE id = $1")
+            .bind(holding_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    tx.commit().await?;
+
+    Ok(Json(RealizedGainRow {
+        id:             rg_row.try_get("id").map_err(AppError::Db)?,
+        ticker:         rg_row.try_get("ticker").map_err(AppError::Db)?,
+        shares:         rg_row.try_get::<f64, _>("shares").map_err(AppError::Db)?,
+        cost_per_share: rg_row.try_get::<f64, _>("cost_per_share").map_err(AppError::Db)?,
+        sale_price:     rg_row.try_get::<f64, _>("sale_price").map_err(AppError::Db)?,
+        realized_gain:  rg_row.try_get::<f64, _>("realized_gain").map_err(AppError::Db)?,
+        sold_at:        rg_row.try_get("sold_at").map_err(AppError::Db)?,
+    }))
+}
+
 // ── POST /api/portfolio/{id}/holdings/import ──────────────────────────────────
 
 #[utoipa::path(
@@ -804,6 +995,37 @@ pub async fn get_community_portfolios(
 
     let portfolio_ids: Vec<Uuid> = portfolios.iter().map(|p| p.id).collect();
 
+    // Realized gains for all these portfolios in one round-trip.
+    let rg_rows = sqlx::query(
+        "SELECT portfolio_id, id, ticker,
+                shares::FLOAT8         AS shares,
+                cost_per_share::FLOAT8 AS cost_per_share,
+                sale_price::FLOAT8     AS sale_price,
+                realized_gain::FLOAT8  AS realized_gain,
+                sold_at
+         FROM realized_gains
+         WHERE portfolio_id = ANY($1)
+         ORDER BY sold_at DESC",
+    )
+    .bind(portfolio_ids.as_slice())
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut realized_by_portfolio: std::collections::HashMap<Uuid, Vec<RealizedGainRow>> =
+        std::collections::HashMap::new();
+    for r in &rg_rows {
+        let pid: Uuid = r.try_get("portfolio_id").map_err(AppError::Db)?;
+        realized_by_portfolio.entry(pid).or_default().push(RealizedGainRow {
+            id:             r.try_get("id").map_err(AppError::Db)?,
+            ticker:         r.try_get("ticker").map_err(AppError::Db)?,
+            shares:         r.try_get::<f64, _>("shares").map_err(AppError::Db)?,
+            cost_per_share: r.try_get::<f64, _>("cost_per_share").map_err(AppError::Db)?,
+            sale_price:     r.try_get::<f64, _>("sale_price").map_err(AppError::Db)?,
+            realized_gain:  r.try_get::<f64, _>("realized_gain").map_err(AppError::Db)?,
+            sold_at:        r.try_get("sold_at").map_err(AppError::Db)?,
+        });
+    }
+
     // All holdings for these portfolios in one round-trip.
     let h_rows = sqlx::query(
         "SELECT id, portfolio_id, ticker,
@@ -861,35 +1083,47 @@ pub async fn get_community_portfolios(
         .filter_map(|(t, p)| p.map(|price| (t, price)))
         .collect();
 
-    // Build a summary for each portfolio and sort by total_return_pct DESC.
+    // Build a summary for each portfolio.
+    // Include portfolios that have realized gains even if all positions are closed.
     let mut summaries: Vec<PublicPortfolioSummary> = portfolios
         .into_iter()
         .filter_map(|p| {
-            let holdings_data = holdings_by_portfolio.get(&p.id)?;
-            let holdings: Vec<HoldingPerformance> = holdings_data
-                .iter()
-                .filter_map(|h| {
-                    let current_price = *price_map.get(&h.ticker)?;
-                    let return_pct = if h.price_at_add > 0.0 {
-                        (current_price / h.price_at_add - 1.0) * 100.0
-                    } else {
-                        0.0
-                    };
-                    Some(HoldingPerformance {
-                        holding: HoldingRow {
-                            id: h.id,
-                            ticker: h.ticker.clone(),
-                            price_at_add: h.price_at_add,
-                            shares: h.shares,
-                            added_at: h.added_at,
-                        },
-                        current_price,
-                        return_pct,
-                    })
-                })
-                .collect();
+            let realized_rows = realized_by_portfolio.remove(&p.id).unwrap_or_default();
+            let total_realized_gain: f64 = realized_rows.iter().map(|r| r.realized_gain).sum();
+            let realized = RealizedGainsSummary {
+                total_realized_gain,
+                rows: realized_rows,
+            };
 
-            if holdings.is_empty() {
+            let holdings_data = holdings_by_portfolio.get(&p.id);
+            let holdings: Vec<HoldingPerformance> = holdings_data
+                .map(|data| {
+                    data.iter()
+                        .filter_map(|h| {
+                            let current_price = *price_map.get(&h.ticker)?;
+                            let return_pct = if h.price_at_add > 0.0 {
+                                (current_price / h.price_at_add - 1.0) * 100.0
+                            } else {
+                                0.0
+                            };
+                            Some(HoldingPerformance {
+                                holding: HoldingRow {
+                                    id: h.id,
+                                    ticker: h.ticker.clone(),
+                                    price_at_add: h.price_at_add,
+                                    shares: h.shares,
+                                    added_at: h.added_at,
+                                },
+                                current_price,
+                                return_pct,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Skip portfolios with no activity at all.
+            if holdings.is_empty() && realized.rows.is_empty() {
                 return None;
             }
 
@@ -897,24 +1131,39 @@ pub async fn get_community_portfolios(
                 .iter()
                 .filter_map(|h| h.holding.shares.map(|s| s * h.holding.price_at_add))
                 .sum();
-            let total_return_pct = if total_cost > 0.0 {
-                Some(
-                    holdings
-                        .iter()
-                        .filter_map(|h| {
-                            h.holding.shares.map(|s| {
-                                let w = (s * h.holding.price_at_add) / total_cost;
-                                w * h.return_pct
+
+            let total_return_pct = if !holdings.is_empty() {
+                if total_cost > 0.0 {
+                    Some(
+                        holdings
+                            .iter()
+                            .filter_map(|h| {
+                                h.holding.shares.map(|s| {
+                                    let w = (s * h.holding.price_at_add) / total_cost;
+                                    w * h.return_pct
+                                })
                             })
-                        })
-                        .sum::<f64>(),
-                )
+                            .sum::<f64>(),
+                    )
+                } else {
+                    Some(
+                        holdings.iter().map(|h| h.return_pct).sum::<f64>()
+                            / holdings.len() as f64,
+                    )
+                }
             } else {
-                Some(
-                    holdings.iter().map(|h| h.return_pct).sum::<f64>()
-                        / holdings.len() as f64,
-                )
+                None
             };
+
+            // Dollar unrealized gain: (current - cost) * shares for positions with share counts.
+            let total_unrealized_gain: f64 = holdings
+                .iter()
+                .filter_map(|h| {
+                    h.holding.shares.map(|s| (h.current_price - h.holding.price_at_add) * s)
+                })
+                .sum();
+
+            let combined_gain = total_realized_gain + total_unrealized_gain;
 
             Some(PublicPortfolioSummary {
                 id: p.id,
@@ -922,15 +1171,18 @@ pub async fn get_community_portfolios(
                 owner: p.owner,
                 holdings,
                 total_return_pct,
+                total_unrealized_gain,
+                realized,
+                combined_gain,
             })
         })
         .collect();
 
-    summaries.sort_by(|a, b| match (b.total_return_pct, a.total_return_pct) {
-        (Some(bv), Some(av)) => bv.partial_cmp(&av).unwrap_or(std::cmp::Ordering::Equal),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => std::cmp::Ordering::Equal,
+    // Rank by combined dollar P&L (realized + unrealized) descending.
+    summaries.sort_by(|a, b| {
+        b.combined_gain
+            .partial_cmp(&a.combined_gain)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     Ok(Json(summaries))

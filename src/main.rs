@@ -89,6 +89,7 @@ impl Modify for BearerAuth {
         routes::portfolio::add_holding,
         routes::portfolio::import_holdings,
         routes::portfolio::remove_holding,
+        routes::portfolio::sell_holding,
         routes::portfolio::get_public_portfolio,
         routes::portfolio::get_community_portfolios,
     ),
@@ -132,6 +133,9 @@ impl Modify for BearerAuth {
         PublicPortfolioSummary,
         ImportRowResult,
         ImportHoldingsResponse,
+        SellHoldingRequest,
+        RealizedGainRow,
+        RealizedGainsSummary,
         error::ErrorBody,
     )),
     tags(
@@ -198,6 +202,7 @@ async fn main() {
         .routes(routes!(routes::portfolio::add_holding))
         .routes(routes!(routes::portfolio::import_holdings))
         .routes(routes!(routes::portfolio::remove_holding))
+        .routes(routes!(routes::portfolio::sell_holding))
         .routes(routes!(routes::portfolio::get_public_portfolio))
         .routes(routes!(routes::portfolio::get_community_portfolios))
         .routes(routes!(routes::feedback::submit_feedback))
