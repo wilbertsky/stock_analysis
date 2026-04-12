@@ -299,6 +299,25 @@ pub struct UpdateProfileRequest {
     pub display_name: Option<String>,
 }
 
+// ── Password management ───────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ForgotPasswordRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ResetPasswordRequest {
+    pub token: String,
+    pub new_password: String,
+}
+
 // ── Community / public portfolios ────────────────────────────────────────────
 
 #[derive(Debug, Serialize, ToSchema)]

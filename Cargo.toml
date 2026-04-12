@@ -1,6 +1,6 @@
 [package]
 name = "axum-api"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 
 [dependencies]
@@ -37,6 +37,9 @@ rand = "0.8"
 # Encryption (FMP key storage)
 aes-gcm = "0.10"
 base64 = "0.22"
+
+# Email
+lettre = { version = "0.11", features = ["smtp-transport", "tokio1", "tokio1-rustls-tls", "builder"], default-features = false }
 
 [dev-dependencies]
 wiremock = "0.6"

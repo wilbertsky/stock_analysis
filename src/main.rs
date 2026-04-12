@@ -14,6 +14,8 @@ mod yahoo;
 
 #[cfg(test)]
 mod route_tests;
+#[cfg(test)]
+mod db_tests;
 
 use tower_http::cors::{Any, CorsLayer};
 use utoipa::{openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme}, Modify, OpenApi};
@@ -82,6 +84,9 @@ impl Modify for BearerAuth {
         routes::auth::get_me,
         routes::auth::update_profile,
         routes::auth::upsert_fmp_key,
+        routes::auth::change_password,
+        routes::auth::forgot_password,
+        routes::auth::reset_password,
         routes::portfolio::create_portfolio,
         routes::portfolio::list_portfolios,
         routes::portfolio::get_portfolio,
@@ -124,6 +129,9 @@ impl Modify for BearerAuth {
         MeResponse,
         UpdateProfileRequest,
         UpsertFmpKeyRequest,
+        ChangePasswordRequest,
+        ForgotPasswordRequest,
+        ResetPasswordRequest,
         CreatePortfolioRequest,
         PortfolioRow,
         AddHoldingRequest,
@@ -195,6 +203,9 @@ async fn main() {
         .routes(routes!(routes::auth::get_me))
         .routes(routes!(routes::auth::update_profile))
         .routes(routes!(routes::auth::upsert_fmp_key))
+        .routes(routes!(routes::auth::change_password))
+        .routes(routes!(routes::auth::forgot_password))
+        .routes(routes!(routes::auth::reset_password))
         .routes(routes!(routes::portfolio::create_portfolio))
         .routes(routes!(routes::portfolio::list_portfolios))
         .routes(routes!(routes::portfolio::get_portfolio))

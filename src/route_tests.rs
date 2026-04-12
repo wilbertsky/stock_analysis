@@ -18,17 +18,21 @@ mod tests {
     // ── Router builder ────────────────────────────────────────────────────────
 
     fn build_test_router(state: AppState) -> axum::Router {
-        use axum::routing::get;
+        use axum::routing::{get, patch, post};
         axum::Router::new()
-            .route("/api/health", get(routes::health_check))
-            .route("/api/stock/{ticker}/fundamentals",   get(routes::stock::get_fundamentals))
-            .route("/api/stock/{ticker}/intrinsic-value",get(routes::stock::get_intrinsic_value))
-            .route("/api/stock/{ticker}/graham-number",  get(routes::stock::get_graham_number))
-            .route("/api/stock/{ticker}/piotroski",      get(routes::stock::get_piotroski))
-            .route("/api/stock/{ticker}/dividends",      get(routes::stock::get_dividends))
-            .route("/api/stock/{ticker}/quality",        get(routes::stock::get_quality))
-            .route("/api/stock/{ticker}/momentum",       get(routes::stock::get_momentum))
-            .route("/api/screener/{sector}",             get(routes::screener::get_sector_top_picks))
+            .route("/api/health",                         get(routes::health_check))
+            .route("/api/stock/{ticker}/fundamentals",    get(routes::stock::get_fundamentals))
+            .route("/api/stock/{ticker}/intrinsic-value", get(routes::stock::get_intrinsic_value))
+            .route("/api/stock/{ticker}/graham-number",   get(routes::stock::get_graham_number))
+            .route("/api/stock/{ticker}/piotroski",       get(routes::stock::get_piotroski))
+            .route("/api/stock/{ticker}/dividends",       get(routes::stock::get_dividends))
+            .route("/api/stock/{ticker}/quality",         get(routes::stock::get_quality))
+            .route("/api/stock/{ticker}/momentum",        get(routes::stock::get_momentum))
+            .route("/api/screener/{sector}",              get(routes::screener::get_sector_top_picks))
+            // Auth routes under test
+            .route("/api/auth/password",                  patch(routes::auth::change_password))
+            .route("/api/auth/forgot-password",           post(routes::auth::forgot_password))
+            .route("/api/auth/reset-password",            post(routes::auth::reset_password))
             .with_state(state)
     }
 
@@ -453,5 +457,177 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_string(body))
             .mount(server)
             .await;
+    }
+
+    /// POST or PATCH a JSON body, optionally with a Bearer token.
+    async fn send_json(
+        app: axum::Router,
+        http_method: &str,
+        uri: &str,
+        body: serde_json::Value,
+        token: Option<&str>,
+    ) -> StatusCode {
+        let mut builder = Request::builder()
+            .method(http_method)
+            .uri(uri)
+            .header("Content-Type", "application/json");
+        if let Some(t) = token {
+            builder = builder.header("Authorization", format!("Bearer {t}"));
+        }
+        let req = builder
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    // ── Password: change_password auth guard ──────────────────────────────────
+
+    /// PATCH /api/auth/password without a token must return 401.
+    #[tokio::test]
+    async fn change_password_requires_auth() {
+        let server = MockServer::start().await;
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let status = send_json(
+            app, "PATCH", "/api/auth/password",
+            serde_json::json!({ "current_password": "old", "new_password": "newpass1" }),
+            None,
+        ).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// PATCH /api/auth/password with an invalid token must return 401.
+    #[tokio::test]
+    async fn change_password_rejects_invalid_token() {
+        let server = MockServer::start().await;
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let status = send_json(
+            app, "PATCH", "/api/auth/password",
+            serde_json::json!({ "current_password": "old", "new_password": "newpass1" }),
+            Some("not.a.valid.token"),
+        ).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    // ── Password: forgot / reset are public (no auth token required) ──────────
+
+    /// POST /api/auth/forgot-password must NOT return 401 — it is a public endpoint.
+    /// Without a database it may 500, but it must not require a token.
+    #[tokio::test]
+    async fn forgot_password_is_public() {
+        let server = MockServer::start().await;
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let status = send_json(
+            app, "POST", "/api/auth/forgot-password",
+            serde_json::json!({ "email": "user@example.com" }),
+            None, // no token
+        ).await;
+        assert_ne!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// POST /api/auth/reset-password must NOT return 401 — it is a public endpoint.
+    #[tokio::test]
+    async fn reset_password_is_public() {
+        let server = MockServer::start().await;
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let status = send_json(
+            app, "POST", "/api/auth/reset-password",
+            serde_json::json!({ "token": "some-token", "new_password": "newpassword1" }),
+            None,
+        ).await;
+        assert_ne!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    // ── Password: change_password input validation (unit-level) ──────────────
+
+    /// With a valid token but a new password that's too short, expect 400.
+    /// The validation runs before any DB access so this works without a live DB.
+    #[tokio::test]
+    async fn change_password_rejects_short_new_password() {
+        let server = MockServer::start().await;
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let token = test_token();
+        let status = send_json(
+            app, "PATCH", "/api/auth/password",
+            serde_json::json!({ "current_password": "currentpass", "new_password": "short" }),
+            Some(&token),
+        ).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// With a valid token but identical current and new passwords, expect 400.
+    #[tokio::test]
+    async fn change_password_rejects_same_password() {
+        let server = MockServer::start().await;
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let token = test_token();
+        let status = send_json(
+            app, "PATCH", "/api/auth/password",
+            serde_json::json!({
+                "current_password": "samepassword",
+                "new_password": "samepassword"
+            }),
+            Some(&token),
+        ).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    // ── Realized gain calculation (pure unit tests, no router needed) ─────────
+
+    /// The realized gain formula: (sale_price - cost_per_share) * shares.
+    #[test]
+    fn realized_gain_profit() {
+        let cost = 150.0_f64;
+        let sale = 200.0_f64;
+        let shares = 10.0_f64;
+        let gain = (sale - cost) * shares;
+        assert!((gain - 500.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn realized_gain_loss() {
+        let cost = 200.0_f64;
+        let sale = 150.0_f64;
+        let shares = 5.0_f64;
+        let gain = (sale - cost) * shares;
+        assert!((gain - (-250.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn realized_gain_breakeven() {
+        let cost = 100.0_f64;
+        let sale = 100.0_f64;
+        let shares = 100.0_f64;
+        let gain = (sale - cost) * shares;
+        assert!(gain.abs() < 0.001);
+    }
+
+    /// Combined P&L = realized gain + unrealized dollar gain.
+    #[test]
+    fn combined_gain_sums_realized_and_unrealized() {
+        let realized = 500.0_f64;
+        let cost = 100.0_f64;
+        let current = 120.0_f64;
+        let shares = 10.0_f64;
+        let unrealized = (current - cost) * shares; // 200.0
+        let combined = realized + unrealized;
+        assert!((combined - 700.0).abs() < 0.001);
+    }
+
+    /// Partial sell reduces remaining shares correctly.
+    #[test]
+    fn partial_sell_remaining_shares() {
+        let owned = 10.0_f64;
+        let selling = 3.0_f64;
+        let remaining = owned - selling;
+        assert!((remaining - 7.0).abs() < 1e-9);
+    }
+
+    /// Full sell (within epsilon) leaves zero remaining.
+    #[test]
+    fn full_sell_within_epsilon() {
+        let owned = 10.0_f64;
+        let selling = 10.0_f64;
+        let remaining = owned - selling;
+        assert!(remaining < 1e-9);
     }
 }

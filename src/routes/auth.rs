@@ -1,11 +1,16 @@
 use axum::{extract::State, http::StatusCode, Json};
+use chrono::Utc;
+use lettre::{AsyncTransport, Message, message::{Mailbox, header::ContentType}};
 use tokio::task::spawn_blocking;
 use uuid::Uuid;
 use crate::{
     auth::{jwt::encode_token, middleware::AuthUser, password},
     crypto,
     error::AppError,
-    models::{AuthResponse, LoginRequest, MeResponse, RegisterRequest, UpdateProfileRequest, UpsertFmpKeyRequest},
+    models::{
+        AuthResponse, ChangePasswordRequest, ForgotPasswordRequest, LoginRequest, MeResponse,
+        RegisterRequest, ResetPasswordRequest, UpdateProfileRequest, UpsertFmpKeyRequest,
+    },
     state::AppState,
 };
 
@@ -272,6 +277,208 @@ pub async fn upsert_fmp_key(
         .bind(auth.user_id)
         .execute(&state.db)
         .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ── PATCH /api/auth/password ──────────────────────────────────────────────────
+
+#[utoipa::path(
+    patch,
+    path = "/api/auth/password",
+    tag = "auth",
+    request_body = ChangePasswordRequest,
+    description = "Change the authenticated user's password. Requires the current password to verify identity.",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 204, description = "Password changed"),
+        (status = 400, description = "Invalid input or wrong current password", body = crate::error::ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = crate::error::ErrorBody),
+    )
+)]
+pub async fn change_password(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<ChangePasswordRequest>,
+) -> Result<StatusCode, AppError> {
+    if body.new_password.len() < 8 {
+        return Err(AppError::BadRequest(
+            "New password must be at least 8 characters".into(),
+        ));
+    }
+    if body.new_password == body.current_password {
+        return Err(AppError::BadRequest(
+            "New password must differ from current password".into(),
+        ));
+    }
+
+    let row = sqlx::query_as::<_, (String,)>(
+        "SELECT password_hash FROM users WHERE id = $1",
+    )
+    .bind(auth.user_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::Unauthorized)?;
+
+    let current = body.current_password.clone();
+    let hash = row.0.clone();
+    spawn_blocking(move || password::verify_password(&current, &hash))
+        .await
+        .map_err(|_| AppError::Internal("Thread join error".into()))??;
+
+    let plain = body.new_password.clone();
+    let new_hash = spawn_blocking(move || password::hash_password(&plain))
+        .await
+        .map_err(|_| AppError::Internal("Thread join error".into()))??;
+
+    sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+        .bind(new_hash)
+        .bind(auth.user_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ── POST /api/auth/forgot-password ───────────────────────────────────────────
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/forgot-password",
+    tag = "auth",
+    request_body = ForgotPasswordRequest,
+    description = "Request a password reset. If the email matches a registered account, \
+        a reset token valid for 1 hour is generated and emailed. \
+        Always returns 204 regardless of whether the email exists (prevents enumeration). \
+        Requires SMTP_HOST to be configured on the server for email delivery.",
+    security(()),
+    responses(
+        (status = 204, description = "Reset email sent (or silently skipped if email not found)"),
+    )
+)]
+pub async fn forgot_password(
+    State(state): State<AppState>,
+    Json(body): Json<ForgotPasswordRequest>,
+) -> Result<StatusCode, AppError> {
+    let email = body.email.trim().to_ascii_lowercase();
+
+    // Look up the user — return 204 even if not found to prevent enumeration.
+    let row = sqlx::query_as::<_, (Uuid,)>(
+        "SELECT id FROM users WHERE LOWER(email) = $1",
+    )
+    .bind(&email)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let Some((user_id,)) = row else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
+
+    // Invalidate any existing unused tokens for this user.
+    sqlx::query(
+        "UPDATE password_reset_tokens SET used_at = NOW()
+         WHERE user_id = $1 AND used_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(&state.db)
+    .await?;
+
+    let token = Uuid::new_v4().to_string();
+    let expires_at = Utc::now() + chrono::Duration::hours(1);
+
+    sqlx::query(
+        "INSERT INTO password_reset_tokens (token, user_id, expires_at)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(&token)
+    .bind(user_id)
+    .bind(expires_at)
+    .execute(&state.db)
+    .await?;
+
+    // Send email if SMTP is configured.
+    if let (Some(mailer), Some(from)) = (&state.mailer, &state.smtp_from) {
+        if let (Ok(from_addr), Ok(to_addr)) = (from.parse::<Mailbox>(), email.parse::<Mailbox>()) {
+            let body_text = format!(
+                "You requested a password reset for your Stock Terminal account.\n\n\
+                 Your reset code is:\n\n    {token}\n\n\
+                 Enter this code in the app along with your new password.\n\
+                 This code expires in 1 hour.\n\n\
+                 If you did not request this, you can safely ignore this email.",
+            );
+            if let Ok(msg) = Message::builder()
+                .from(from_addr)
+                .to(to_addr)
+                .subject("Stock Terminal — Password Reset")
+                .header(ContentType::TEXT_PLAIN)
+                .body(body_text)
+            {
+                let _ = mailer.send(msg).await; // fire-and-forget; don't fail the request
+            }
+        }
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ── POST /api/auth/reset-password ────────────────────────────────────────────
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/reset-password",
+    tag = "auth",
+    request_body = ResetPasswordRequest,
+    description = "Consume a password reset token and set a new password. \
+        The token must be unused and not expired (1-hour window).",
+    security(()),
+    responses(
+        (status = 204, description = "Password updated"),
+        (status = 400, description = "Invalid, expired, or already-used token", body = crate::error::ErrorBody),
+    )
+)]
+pub async fn reset_password(
+    State(state): State<AppState>,
+    Json(body): Json<ResetPasswordRequest>,
+) -> Result<StatusCode, AppError> {
+    if body.new_password.len() < 8 {
+        return Err(AppError::BadRequest(
+            "Password must be at least 8 characters".into(),
+        ));
+    }
+
+    let row = sqlx::query_as::<_, (Uuid,)>(
+        "SELECT user_id FROM password_reset_tokens
+         WHERE token = $1
+           AND used_at IS NULL
+           AND expires_at > NOW()",
+    )
+    .bind(&body.token)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::BadRequest("Reset code is invalid or has expired".into()))?;
+
+    let user_id = row.0;
+    let plain = body.new_password.clone();
+    let new_hash = spawn_blocking(move || password::hash_password(&plain))
+        .await
+        .map_err(|_| AppError::Internal("Thread join error".into()))??;
+
+    let mut tx = state.db.begin().await?;
+
+    sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+        .bind(&new_hash)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query(
+        "UPDATE password_reset_tokens SET used_at = NOW() WHERE token = $1",
+    )
+    .bind(&body.token)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
