@@ -1,6 +1,5 @@
 use axum::{extract::State, http::StatusCode, Json};
 use chrono::Utc;
-use lettre::{AsyncTransport, Message, message::{Mailbox, header::ContentType}};
 use tokio::task::spawn_blocking;
 use uuid::Uuid;
 use crate::{
@@ -396,38 +395,40 @@ pub async fn forgot_password(
     .execute(&state.db)
     .await?;
 
-    // Send email if SMTP is configured.
-    if let (Some(mailer), Some(from)) = (&state.mailer, &state.smtp_from) {
-        tracing::info!(to = %email, "sending password reset email");
-        if let (Ok(from_addr), Ok(to_addr)) = (from.parse::<Mailbox>(), email.parse::<Mailbox>()) {
-            let body_text = format!(
-                "You requested a password reset for your Stock Terminal account.\n\n\
-                 Your reset code is:\n\n    {token}\n\n\
-                 Enter this code in the app along with your new password.\n\
-                 This code expires in 1 hour.\n\n\
-                 If you did not request this, you can safely ignore this email.",
-            );
-            match Message::builder()
-                .from(from_addr)
-                .to(to_addr)
-                .subject("Stock Terminal — Password Reset")
-                .header(ContentType::TEXT_PLAIN)
-                .body(body_text)
-            {
-                Ok(msg) => {
-                    if let Err(e) = mailer.send(msg).await {
-                        tracing::error!(error = %e, "SMTP send failed");
-                    } else {
-                        tracing::info!(to = %email, "password reset email sent");
-                    }
-                }
-                Err(e) => tracing::error!(error = %e, "failed to build email message"),
+    // Send email via Resend HTTP API if configured.
+    if let Some(api_key) = &state.resend_api_key {
+        tracing::info!(to = %email, "sending password reset email via Resend");
+        let body_text = format!(
+            "You requested a password reset for your Stock Terminal account.\n\n\
+             Your reset code is:\n\n    {token}\n\n\
+             Enter this code in the app along with your new password.\n\
+             This code expires in 1 hour.\n\n\
+             If you did not request this, you can safely ignore this email.",
+        );
+        let payload = serde_json::json!({
+            "from": state.email_from.as_ref(),
+            "to": [&email],
+            "subject": "Stock Terminal — Password Reset",
+            "text": body_text,
+        });
+        match state.http_client
+            .post("https://api.resend.com/emails")
+            .header("Authorization", format!("Bearer {api_key}"))
+            .json(&payload)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() =>
+                tracing::info!(to = %email, "password reset email sent"),
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                tracing::error!(status = %status, body = %body, "Resend rejected the request");
             }
-        } else {
-            tracing::error!(from = %from.as_ref(), to = %email, "invalid email address for Mailbox");
+            Err(e) => tracing::error!(error = %e, "Resend HTTP request failed"),
         }
     } else {
-        tracing::warn!("SMTP not configured — password reset token created but no email sent");
+        tracing::warn!("RESEND_API_KEY not set — password reset token created but no email sent");
     }
 
     Ok(StatusCode::NO_CONTENT)

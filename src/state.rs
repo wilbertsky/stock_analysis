@@ -1,9 +1,5 @@
 use std::sync::Arc;
 use base64::Engine as _;
-use lettre::{
-    AsyncSmtpTransport, Tokio1Executor,
-    transport::smtp::authentication::Credentials,
-};
 use reqwest::Client;
 use sqlx::PgPool;
 use crate::edgar::EdgarClient;
@@ -27,12 +23,13 @@ pub struct AppState {
     pub http_client: Client,
     /// S&P 500 constituent list indexed by sector slug.
     pub sp500: Arc<Sp500>,
-    /// Optional SMTP transport for sending password reset emails.
-    /// None when SMTP_HOST is not configured.
-    pub mailer: Option<Arc<AsyncSmtpTransport<Tokio1Executor>>>,
-    /// From-address used for outgoing emails (SMTP_FROM env var).
-    pub smtp_from: Option<Arc<str>>,
-    /// App base URL used in reset email links (APP_URL env var, e.g. "https://app.example.com").
+    /// Resend API key for sending password reset emails via HTTPS (no SMTP ports needed).
+    /// None when RESEND_API_KEY is not configured — email is disabled.
+    pub resend_api_key: Option<Arc<str>>,
+    /// From-address for outgoing emails (EMAIL_FROM env var).
+    /// Defaults to onboarding@resend.dev when not set (works without domain verification).
+    pub email_from: Arc<str>,
+    /// App base URL used in reset email links (APP_URL env var).
     pub app_url: Arc<str>,
 }
 
@@ -69,8 +66,15 @@ impl AppState {
         let providers = Arc::new(Providers::new(edgar, yahoo));
         let sp500 = Arc::new(Sp500::load(&http_client).await);
 
-        // Optional SMTP mailer — only built when SMTP_HOST is present.
-        let (mailer, smtp_from) = build_mailer();
+        let resend_api_key = std::env::var("RESEND_API_KEY").ok()
+            .filter(|k| !k.is_empty())
+            .map(|k| { tracing::info!("Resend email configured"); Arc::from(k.as_str()) });
+        if resend_api_key.is_none() {
+            tracing::warn!("RESEND_API_KEY not set — password reset emails disabled");
+        }
+
+        let email_from = std::env::var("EMAIL_FROM")
+            .unwrap_or_else(|_| "onboarding@resend.dev".to_owned());
         let app_url = std::env::var("APP_URL")
             .unwrap_or_else(|_| "https://stockanalysis-production-fbca.up.railway.app".to_owned());
 
@@ -82,8 +86,8 @@ impl AppState {
             fmp_enc_key: Arc::new(enc_key),
             http_client,
             sp500,
-            mailer,
-            smtp_from,
+            resend_api_key,
+            email_from: Arc::from(email_from.as_str()),
             app_url: Arc::from(app_url.as_str()),
         }
     }
@@ -108,35 +112,6 @@ impl AppState {
             None => self.fmp.clone(),
         }
     }
-
-}
-
-/// Build an SMTP mailer from environment variables.
-/// Returns `(None, None)` when `SMTP_HOST` is not set — email is disabled.
-fn build_mailer() -> (Option<Arc<AsyncSmtpTransport<Tokio1Executor>>>, Option<Arc<str>>) {
-    let host = match std::env::var("SMTP_HOST") {
-        Ok(h) if !h.is_empty() => h,
-        _ => {
-            tracing::warn!("SMTP_HOST not set — email delivery disabled");
-            return (None, None);
-        }
-    };
-    let user = std::env::var("SMTP_USERNAME").unwrap_or_default();
-    let pass = std::env::var("SMTP_PASSWORD").unwrap_or_default();
-    let port: u16 = std::env::var("SMTP_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(587);
-    let from = std::env::var("SMTP_FROM").unwrap_or_else(|_| format!("noreply@{}", host));
-
-    tracing::info!(host = %host, port = port, user = %user, from = %from, "SMTP mailer configured");
-
-    let builder = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&host)
-        .expect("Invalid SMTP host")
-        .port(port)
-        .credentials(Credentials::new(user, pass));
-
-    (Some(Arc::new(builder.build())), Some(Arc::from(from.as_str())))
 }
 
 impl AppState {
@@ -164,8 +139,8 @@ impl AppState {
             fmp_enc_key: Arc::new([0u8; 32]),
             http_client,
             sp500,
-            mailer: None,
-            smtp_from: None,
+            resend_api_key: None,
+            email_from: Arc::from("onboarding@resend.dev"),
             app_url: Arc::from("http://localhost:1420"),
         }
     }
@@ -180,12 +155,9 @@ impl AppState {
 
         let http_client = Client::new();
         let fmp = Arc::new(FmpClient::with_base_url(api_key, base_url.clone()));
-        // Tests use an empty EDGAR client (no CIK map) so all calls route through FMP mock.
         let edgar = Arc::new(EdgarClient::new_empty(http_client.clone()));
-        // Disabled so test price requests fall back to the FMP mock server
         let yahoo = Arc::new(YahooClient::new_disabled());
         let providers = Arc::new(Providers::new(edgar, yahoo));
-        // Empty S&P 500 for tests — screener falls back to sectors.rs lists
         let sp500 = Arc::new(Sp500::empty());
         Self {
             providers,
@@ -196,8 +168,8 @@ impl AppState {
             fmp_enc_key: Arc::new([0u8; 32]),
             http_client,
             sp500,
-            mailer: None,
-            smtp_from: None,
+            resend_api_key: None,
+            email_from: Arc::from("onboarding@resend.dev"),
             app_url: Arc::from("http://localhost:1420"),
         }
     }
