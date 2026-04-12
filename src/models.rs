@@ -393,6 +393,11 @@ pub struct CreatePortfolioRequest {
     pub is_public: bool,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdatePortfolioRequest {
+    pub is_public: bool,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PortfolioRow {
     pub id: Uuid,

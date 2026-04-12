@@ -14,6 +14,7 @@ use crate::{
         AddHoldingRequest, CreatePortfolioRequest, HoldingPerformance, HoldingRow,
         ImportHoldingsResponse, ImportRowResult, PortfolioPerformanceResponse, PortfolioRow,
         PublicPortfolioSummary, RealizedGainRow, RealizedGainsSummary, SellHoldingRequest,
+        UpdatePortfolioRequest,
     },
     state::AppState,
 };
@@ -1218,4 +1219,46 @@ pub async fn get_public_portfolio(
     let portfolio_id: Uuid = row.try_get("id").map_err(AppError::Db)?;
 
     Ok(Json(fetch_performance(&state, portfolio_id).await?))
+}
+
+// ── PATCH /api/portfolio/{id} ─────────────────────────────────────────────────
+
+#[utoipa::path(
+    patch,
+    path = "/api/portfolio/{id}",
+    tag = "portfolio",
+    request_body = UpdatePortfolioRequest,
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Portfolio updated", body = PortfolioRow),
+        (status = 403, description = "Not your portfolio", body = crate::error::ErrorBody),
+        (status = 404, description = "Portfolio not found", body = crate::error::ErrorBody),
+    )
+)]
+pub async fn update_portfolio(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdatePortfolioRequest>,
+) -> Result<Json<PortfolioRow>, AppError> {
+    assert_owns_portfolio(&state, id, auth.user_id).await?;
+
+    let row = sqlx::query(
+        "UPDATE portfolios SET is_public = $1, updated_at = now()
+         WHERE id = $2
+         RETURNING id, name, is_public, share_token, created_at, updated_at",
+    )
+    .bind(body.is_public)
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(PortfolioRow {
+        id:          row.try_get("id").map_err(AppError::Db)?,
+        name:        row.try_get("name").map_err(AppError::Db)?,
+        is_public:   row.try_get("is_public").map_err(AppError::Db)?,
+        share_token: row.try_get("share_token").map_err(AppError::Db)?,
+        created_at:  row.try_get("created_at").map_err(AppError::Db)?,
+        updated_at:  row.try_get("updated_at").map_err(AppError::Db)?,
+    }))
 }
