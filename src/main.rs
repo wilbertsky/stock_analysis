@@ -169,6 +169,19 @@ async fn main() {
         )
         .init();
 
+    // Temporary: dump all SMTP-prefixed env vars so we can verify Railway injection.
+    {
+        let smtp_vars: Vec<_> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("SMTP"))
+            .map(|(k, v)| if k.contains("PASSWORD") { format!("{k}=[redacted]") } else { format!("{k}={v}") })
+            .collect();
+        if smtp_vars.is_empty() {
+            tracing::warn!("no SMTP_* environment variables found in process");
+        } else {
+            tracing::info!(vars = ?smtp_vars, "SMTP env vars present in process");
+        }
+    }
+
     let api_key =
         std::env::var("FMP_API_KEY").expect("FMP_API_KEY must be set in environment or .env file");
 
