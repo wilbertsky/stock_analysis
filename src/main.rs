@@ -174,6 +174,18 @@ async fn main() {
 
     let state = AppState::new(api_key).await;
 
+    // Verify SMTP connectivity at startup so misconfiguration is caught in logs immediately.
+    if let Some(mailer) = &state.mailer {
+        let mailer = mailer.clone();
+        tokio::spawn(async move {
+            match mailer.test_connection().await {
+                Ok(true)  => tracing::info!("SMTP connection test passed"),
+                Ok(false) => tracing::warn!("SMTP connection test returned false — check credentials"),
+                Err(e)    => tracing::error!(error = %e, "SMTP connection test failed — email will not work"),
+            }
+        });
+    }
+
     // Run database migrations on startup.
     sqlx::migrate!()
         .run(&state.db)
