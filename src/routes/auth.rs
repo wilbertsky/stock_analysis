@@ -398,6 +398,7 @@ pub async fn forgot_password(
 
     // Send email if SMTP is configured.
     if let (Some(mailer), Some(from)) = (&state.mailer, &state.smtp_from) {
+        tracing::info!(to = %email, "sending password reset email");
         if let (Ok(from_addr), Ok(to_addr)) = (from.parse::<Mailbox>(), email.parse::<Mailbox>()) {
             let body_text = format!(
                 "You requested a password reset for your Stock Terminal account.\n\n\
@@ -406,16 +407,27 @@ pub async fn forgot_password(
                  This code expires in 1 hour.\n\n\
                  If you did not request this, you can safely ignore this email.",
             );
-            if let Ok(msg) = Message::builder()
+            match Message::builder()
                 .from(from_addr)
                 .to(to_addr)
                 .subject("Stock Terminal — Password Reset")
                 .header(ContentType::TEXT_PLAIN)
                 .body(body_text)
             {
-                let _ = mailer.send(msg).await; // fire-and-forget; don't fail the request
+                Ok(msg) => {
+                    if let Err(e) = mailer.send(msg).await {
+                        tracing::error!(error = %e, "SMTP send failed");
+                    } else {
+                        tracing::info!(to = %email, "password reset email sent");
+                    }
+                }
+                Err(e) => tracing::error!(error = %e, "failed to build email message"),
             }
+        } else {
+            tracing::error!(from = %from.as_ref(), to = %email, "invalid email address for Mailbox");
         }
+    } else {
+        tracing::warn!("SMTP not configured — password reset token created but no email sent");
     }
 
     Ok(StatusCode::NO_CONTENT)

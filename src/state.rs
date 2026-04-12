@@ -116,7 +116,10 @@ impl AppState {
 fn build_mailer() -> (Option<Arc<AsyncSmtpTransport<Tokio1Executor>>>, Option<Arc<str>>) {
     let host = match std::env::var("SMTP_HOST") {
         Ok(h) if !h.is_empty() => h,
-        _ => return (None, None),
+        _ => {
+            tracing::warn!("SMTP_HOST not set — email delivery disabled");
+            return (None, None);
+        }
     };
     let user = std::env::var("SMTP_USERNAME").unwrap_or_default();
     let pass = std::env::var("SMTP_PASSWORD").unwrap_or_default();
@@ -125,6 +128,8 @@ fn build_mailer() -> (Option<Arc<AsyncSmtpTransport<Tokio1Executor>>>, Option<Ar
         .and_then(|p| p.parse().ok())
         .unwrap_or(587);
     let from = std::env::var("SMTP_FROM").unwrap_or_else(|_| format!("noreply@{}", host));
+
+    tracing::info!(host = %host, port = port, user = %user, from = %from, "SMTP mailer configured");
 
     let builder = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&host)
         .expect("Invalid SMTP host")
