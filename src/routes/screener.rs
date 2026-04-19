@@ -106,7 +106,7 @@ fn sector_model(sector: &str) -> SectorModel {
     responses(
         (status = 200, description = "Ranked stock picks for the sector", body = SectorScreenerResponse),
         (status = 422, description = "Unknown sector name", body = crate::error::ErrorBody),
-        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+        (status = 502, description = "Data provider error", body = crate::error::ErrorBody),
     )
 )]
 pub async fn get_sector_top_picks(

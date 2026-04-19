@@ -81,7 +81,7 @@ pub async fn fetch_fundamentals(
     responses(
         (status = 200, description = "Core fundamental metrics sorted oldest to newest", body = FundamentalsResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
-        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+        (status = 502, description = "Data provider error", body = crate::error::ErrorBody),
     )
 )]
 pub async fn get_fundamentals(
@@ -108,7 +108,7 @@ pub async fn get_fundamentals(
     responses(
         (status = 200, description = "CAGR for each fundamental metric across available time windows", body = GrowthRatesResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
-        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+        (status = 502, description = "Data provider error", body = crate::error::ErrorBody),
     )
 )]
 pub async fn get_growth_rates(
@@ -141,7 +141,7 @@ pub async fn get_growth_rates(
         (status = 200, description = "DCF intrinsic value estimate and margin of safety", body = IntrinsicValueResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
         (status = 422, description = "Cannot compute — EPS is zero/negative or insufficient history", body = crate::error::ErrorBody),
-        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+        (status = 502, description = "Data provider error", body = crate::error::ErrorBody),
     )
 )]
 pub async fn get_intrinsic_value(
@@ -183,7 +183,7 @@ pub async fn get_intrinsic_value(
         (status = 200, description = "Graham Number intrinsic value", body = GrahamNumberResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
         (status = 422, description = "Cannot compute — EPS or book value is zero/negative", body = crate::error::ErrorBody),
-        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+        (status = 502, description = "Data provider error", body = crate::error::ErrorBody),
     )
 )]
 pub async fn get_graham_number(
@@ -223,7 +223,7 @@ pub async fn get_graham_number(
         (status = 200, description = "PEG ratio", body = PegRatioResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
         (status = 422, description = "Cannot compute — growth rate is zero or negative", body = crate::error::ErrorBody),
-        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+        (status = 502, description = "Data provider error", body = crate::error::ErrorBody),
     )
 )]
 pub async fn get_peg(
@@ -267,7 +267,7 @@ pub async fn get_peg(
         (status = 200, description = "Complete valuation summary", body = SummaryResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
         (status = 422, description = "One or more valuations could not be computed", body = crate::error::ErrorBody),
-        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+        (status = 502, description = "Data provider error", body = crate::error::ErrorBody),
     )
 )]
 pub async fn get_summary(
@@ -348,7 +348,7 @@ pub async fn get_summary(
     responses(
         (status = 200, description = "Piotroski F-Score with individual signal breakdown", body = PiotroskiResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
-        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+        (status = 502, description = "Data provider error", body = crate::error::ErrorBody),
     )
 )]
 pub async fn get_piotroski(
@@ -385,7 +385,7 @@ pub async fn get_piotroski(
     responses(
         (status = 200, description = "Dividend yield, payout ratio, and sustainability assessment", body = DividendMetricsResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
-        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+        (status = 502, description = "Data provider error", body = crate::error::ErrorBody),
     )
 )]
 pub async fn get_dividends(
@@ -418,7 +418,7 @@ pub async fn get_dividends(
     responses(
         (status = 200, description = "Business quality assessment with composite score", body = QualityScoreResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
-        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+        (status = 502, description = "Data provider error", body = crate::error::ErrorBody),
     )
 )]
 pub async fn get_quality(
@@ -457,7 +457,7 @@ pub async fn get_quality(
     responses(
         (status = 200, description = "Momentum score with 3/6/12-month returns vs SPY", body = MomentumResponse),
         (status = 404, description = "Ticker not found", body = crate::error::ErrorBody),
-        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+        (status = 502, description = "Data provider error", body = crate::error::ErrorBody),
     )
 )]
 pub async fn get_momentum(
@@ -491,7 +491,7 @@ pub struct SearchQuery {
         Returns up to 10 matches with symbol, company name, and exchange information.",
     responses(
         (status = 200, description = "Search results", body = StockSearchResponse),
-        (status = 502, description = "FMP API error", body = crate::error::ErrorBody),
+        (status = 502, description = "Data provider error", body = crate::error::ErrorBody),
     )
 )]
 pub async fn search_stocks(

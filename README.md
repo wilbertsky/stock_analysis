@@ -1,6 +1,6 @@
 # Stock Analysis API
 
-A REST API built in Rust with [Axum](https://github.com/tokio-rs/axum) that provides fundamental stock analysis using value investing frameworks. Data is sourced from [EDGAR](https://www.sec.gov/cgi-bin/browse-edgar) (primary) and [Financial Modeling Prep (FMP)](https://financialmodelingprep.com/) (fallback).
+A REST API built in Rust with [Axum](https://github.com/tokio-rs/axum) that provides fundamental stock analysis using value investing frameworks. Data is sourced from [SEC EDGAR](https://www.sec.gov/cgi-bin/browse-edgar) (fundamentals) and [Yahoo Finance](https://finance.yahoo.com/) (prices and search). No API key required.
 
 ## Features
 
@@ -21,16 +21,16 @@ A REST API built in Rust with [Axum](https://github.com/tokio-rs/axum) that prov
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) (stable)
-- A free API key from [Financial Modeling Prep](https://financialmodelingprep.com/)
+- PostgreSQL
 
 ### Setup
 
 ```bash
 git clone <repo-url>
-cd stock_analysis
+cd axum-api
 
 cp .env.example .env
-# Edit .env and set your FMP_API_KEY
+# Edit .env with your DATABASE_URL and other required vars
 
 cargo run
 ```
@@ -190,7 +190,7 @@ The screener returns a `score_tier` label (High, Above Average, Average, Below A
 
 Key limitations to keep in mind:
 
-- **Data depth** — The free FMP tier provides limited history for some endpoints. CAGR calculations and trend analysis are more reliable with 10+ years of data.
+- **Data depth** — SEC EDGAR filings provide 10-K history which varies by company. CAGR calculations and trend analysis are more reliable with 10+ years of data.
 - **No moat analysis** — Quantitative scores cannot capture *why* a company has a durable competitive advantage (brand, switching costs, network effects, cost structure). That qualitative judgement requires reading the business, not just the numbers.
 - **Weights are not backtested** — The composite scoring weights are based on factor investing research but have not been validated against historical returns for this specific combination.
 - **Sector models are heuristics** — The five models reflect broadly accepted analytical frameworks for each sector type, but individual companies within a sector may warrant a different lens.
@@ -203,9 +203,9 @@ All scores and outputs provided by this API are for **educational purposes only*
 
 ## Notes
 
-- Free FMP accounts are limited to 5 years of historical data for most endpoints
-- 5-year and 10-year CAGRs require more data points than the free tier provides and will return `null`
-- ROIC, Book Value/Share, and FCF/Share may return `null` if not available on your FMP plan
+- Fundamental data comes from SEC EDGAR 10-K filings — availability varies by company age and filing history
+- 5-year and 10-year CAGRs require sufficient filing history and will return `null` if data is unavailable
+- ROIC, Book Value/Share, and FCF/Share may return `null` if not reported in EDGAR filings
 - The sector screener fetches data for up to 20 stocks plus SPY concurrently — allow 15–30 seconds
 
 ## License
