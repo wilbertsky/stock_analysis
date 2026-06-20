@@ -440,6 +440,59 @@ pub fn value_signal(ticker: &str, years: &[FundamentalsYear], current_price: f64
     }
 }
 
+// ── Discovery screener (near-miss value filter) ───────────────────────────────
+
+/// Quality floor for the discovery screener: `quality_score` must be ≥ this.
+/// Anchored to the sector screener's own "Average" tier boundary (`screener.rs`'s
+/// score_tier logic) rather than an invented number — "good enough," not top-decile,
+/// since requiring a high score would just re-derive the existing blue-chip bias.
+pub const DISCOVERY_QUALITY_FLOOR: f64 = 40.0;
+
+/// Debt safety floor for the discovery screener, same rationale and same "Average"
+/// tier anchor as `DISCOVERY_QUALITY_FLOOR`.
+pub const DISCOVERY_DEBT_SAFETY_FLOOR: f64 = 40.0;
+
+/// Piotroski F-Score floor (out of 9). Piotroski's original 2000 study found the edge
+/// concentrated in avoiding the distress decile (scores 0–2 frequently had negative
+/// absolute returns), not in maximizing the score — so this excludes the distress zone
+/// rather than requiring a "strong" score (≥7), which would again bias toward obvious
+/// blue chips.
+pub const DISCOVERY_PIOTROSKI_FLOOR: u8 = 4;
+
+/// "Near miss" band: candidates within this percentage of estimated intrinsic value
+/// (above or below) are considered close enough to be worth a second look. This is a
+/// practical starting heuristic, not a backtested constant — unlike the floors above,
+/// there's no equivalent published study defining "near miss to DCF intrinsic value"
+/// the way there is for Piotroski's distress cutoff.
+pub const DISCOVERY_DEVIATION_BAND_PCT: f64 = 20.0;
+
+/// Percentage deviation of `current_price` from `intrinsic_value`. Negative means the
+/// price is below intrinsic value (undervalued); positive means above (overvalued).
+pub fn dcf_deviation_pct(current_price: f64, intrinsic_value: f64) -> Option<f64> {
+    if intrinsic_value <= 0.0 {
+        return None;
+    }
+    Some((current_price - intrinsic_value) / intrinsic_value * 100.0)
+}
+
+/// `true` if a candidate clears all three discovery quality-floor gates.
+/// Deliberately a floor, not a ceiling — see the constants above for the reasoning
+/// behind each threshold.
+pub fn clears_discovery_quality_floor(
+    quality_score: f64,
+    debt_safety_score: f64,
+    piotroski_score: u8,
+) -> bool {
+    quality_score >= DISCOVERY_QUALITY_FLOOR
+        && debt_safety_score >= DISCOVERY_DEBT_SAFETY_FLOOR
+        && piotroski_score >= DISCOVERY_PIOTROSKI_FLOOR
+}
+
+/// `true` if `deviation_pct` (from `dcf_deviation_pct`) falls within the near-miss band.
+pub fn is_near_miss(deviation_pct: f64) -> bool {
+    deviation_pct.abs() <= DISCOVERY_DEVIATION_BAND_PCT
+}
+
 /// PEG ratio = (P/E) ÷ EPS_growth_rate_percent.
 pub fn peg_ratio(
     ticker: &str,
@@ -1140,6 +1193,86 @@ mod tests {
     #[test]
     fn fcf_yield_score_no_ratios_is_zero() {
         assert_eq!(fcf_yield_score(&[], 100.0), 0.0);
+    }
+
+    // ── dcf_deviation_pct ─────────────────────────────────────────────────────
+
+    #[test]
+    fn deviation_below_intrinsic_value_is_negative() {
+        // price $80 vs intrinsic value $100 → -20%
+        let d = dcf_deviation_pct(80.0, 100.0).unwrap();
+        assert!((d - (-20.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn deviation_above_intrinsic_value_is_positive() {
+        // price $120 vs intrinsic value $100 → +20%
+        let d = dcf_deviation_pct(120.0, 100.0).unwrap();
+        assert!((d - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn deviation_at_intrinsic_value_is_zero() {
+        let d = dcf_deviation_pct(100.0, 100.0).unwrap();
+        assert!(d.abs() < 1e-9);
+    }
+
+    #[test]
+    fn deviation_zero_intrinsic_value_is_none() {
+        assert_eq!(dcf_deviation_pct(100.0, 0.0), None);
+    }
+
+    #[test]
+    fn deviation_negative_intrinsic_value_is_none() {
+        assert_eq!(dcf_deviation_pct(100.0, -10.0), None);
+    }
+
+    // ── is_near_miss ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn near_miss_within_band_both_directions() {
+        assert!(is_near_miss(-19.9));
+        assert!(is_near_miss(19.9));
+        assert!(is_near_miss(0.0));
+    }
+
+    #[test]
+    fn near_miss_at_band_edge_is_inclusive() {
+        assert!(is_near_miss(DISCOVERY_DEVIATION_BAND_PCT));
+        assert!(is_near_miss(-DISCOVERY_DEVIATION_BAND_PCT));
+    }
+
+    #[test]
+    fn near_miss_outside_band_both_directions() {
+        assert!(!is_near_miss(20.1));
+        assert!(!is_near_miss(-20.1));
+    }
+
+    // ── clears_discovery_quality_floor ────────────────────────────────────────
+
+    #[test]
+    fn quality_floor_passes_at_exact_thresholds() {
+        assert!(clears_discovery_quality_floor(40.0, 40.0, 4));
+    }
+
+    #[test]
+    fn quality_floor_passes_above_thresholds() {
+        assert!(clears_discovery_quality_floor(90.0, 90.0, 9));
+    }
+
+    #[test]
+    fn quality_floor_fails_low_quality_score() {
+        assert!(!clears_discovery_quality_floor(39.9, 90.0, 9));
+    }
+
+    #[test]
+    fn quality_floor_fails_low_debt_safety() {
+        assert!(!clears_discovery_quality_floor(90.0, 39.9, 9));
+    }
+
+    #[test]
+    fn quality_floor_fails_distress_zone_piotroski() {
+        assert!(!clears_discovery_quality_floor(90.0, 90.0, 3));
     }
 
     // ── value_signal ──────────────────────────────────────────────────────────

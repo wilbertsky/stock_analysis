@@ -122,6 +122,53 @@ impl FmpClient {
         self.fetch_list(&format!("{}/historical-price-eod/light", self.base_url), ticker, limit).await
     }
 
+    /// Screens the full market by market-cap band and (optionally) sector via
+    /// /stable/company-screener. Used to source both the large-cap screener universe
+    /// (sp500.rs) and the small/mid-cap discovery universe (routes/discovery.rs) —
+    /// FMP's own screener replaces the dead GitHub-hosted S&P 500/Nasdaq 100 constituent
+    /// feeds and reaches well beyond index membership.
+    ///
+    /// Always scoped to `country=US` and `isActivelyTrading=true`; ETFs and funds are
+    /// filtered out client-side since filtering them server-side via query params is
+    /// unverified against the current plan.
+    pub async fn company_screener(
+        &self,
+        market_cap_more_than: u64,
+        market_cap_lower_than: Option<u64>,
+        sector: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<ScreenerCandidate>, AppError> {
+        let mut query: Vec<(&str, String)> = vec![
+            ("marketCapMoreThan", market_cap_more_than.to_string()),
+            ("country", "US".to_owned()),
+            ("isActivelyTrading", "true".to_owned()),
+            ("limit", limit.to_string()),
+            ("apikey", self.api_key.clone()),
+        ];
+        if let Some(cap) = market_cap_lower_than {
+            query.push(("marketCapLowerThan", cap.to_string()));
+        }
+        if let Some(s) = sector {
+            query.push(("sector", s.to_owned()));
+        }
+
+        let url = format!("{}/company-screener", self.base_url);
+        let list: Vec<ScreenerCandidate> = self
+            .client
+            .get(&url)
+            .query(&query)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        Ok(list
+            .into_iter()
+            .filter(|c| !c.is_etf && !c.is_fund && c.is_actively_trading)
+            .collect())
+    }
+
     async fn fetch_list<T>(&self, url: &str, ticker: &str, limit: u32) -> Result<Vec<T>, AppError>
     where
         T: serde::de::DeserializeOwned,
@@ -282,6 +329,22 @@ pub struct FmpProfile {
     /// FMP returns this as a string (e.g. "150000")
     #[serde(default, rename = "fullTimeEmployees", deserialize_with = "de_employees")]
     pub full_time_employees: Option<i64>,
+}
+
+/// From /stable/company-screener — market-cap/sector-filtered company list.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenerCandidate {
+    pub symbol: String,
+    pub company_name: String,
+    pub market_cap: f64,
+    #[serde(default)] pub sector: Option<String>,
+    #[serde(default)] pub industry: Option<String>,
+    #[serde(default)] pub exchange_short_name: Option<String>,
+    #[serde(default)] pub price: Option<f64>,
+    #[serde(default)] pub is_etf: bool,
+    #[serde(default)] pub is_fund: bool,
+    #[serde(default)] pub is_actively_trading: bool,
 }
 
 fn de_employees<'de, D>(de: D) -> Result<Option<i64>, D::Error>

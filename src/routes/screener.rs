@@ -16,7 +16,8 @@ use crate::{
     state::AppState,
 };
 
-const DISCLAIMER: &str = "Scores are calculated from publicly available financial data for \
+/// Shared educational disclaimer — also used by `routes::discovery`.
+pub(crate) const DISCLAIMER: &str = "Scores are calculated from publicly available financial data for \
     educational purposes only. They do not constitute investment advice, a recommendation to \
     buy or sell any security, or a guarantee of future performance. Always conduct your own \
     research and consult a licensed financial advisor before making investment decisions.";
@@ -91,8 +92,9 @@ fn sector_model(sector: &str) -> SectorModel {
     path = "/api/screener/{sector}",
     tag = "screener",
     params(("sector" = String, Path, description = "Sector name, e.g. technology, healthcare, financials")),
-    description = "Screens S&P 500 stocks within a sector and ranks them by a weighted composite \
-        score. The scoring model adapts to the sector: \
+    description = "Screens large-cap stocks (market cap ≥ $10B, sourced from FMP's company \
+        screener) within a sector and ranks them by a weighted composite score. \
+        The scoring model adapts to the sector: \
         Standard sectors (technology, healthcare, industrials, etc.) use Piotroski F-Score (30%), \
         Business Quality (25%), DCF Value Signal (25%), and Momentum vs SPY (20%). \
         Financials use Return on Equity (35%), Price-to-Book (25%), Momentum (25%), Debt Safety (15%). \
@@ -114,7 +116,7 @@ pub async fn get_sector_top_picks(
     _auth: AuthUser,
     Path(sector): Path<String>,
 ) -> Result<Json<SectorScreenerResponse>, AppError> {
-    // Get tickers from S&P 500 constituent list, falling back to curated sectors.rs lists.
+    // Get tickers from the FMP-sourced large-cap list, falling back to curated sectors.rs lists.
     let candidate_tickers: Vec<String> = if state.sp500.is_loaded() {
         state
             .sp500

@@ -227,6 +227,52 @@ pub struct SectorScreenerResponse {
     pub disclaimer: String,
 }
 
+// ── Discovery Screener ──────────────────────────────────────────────────────────
+
+/// A small/mid-cap candidate that cleared the discovery screener's quality floor and
+/// falls within the near-miss band around its DCF intrinsic value.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DiscoveryEntry {
+    pub ticker: String,
+    pub company_name: String,
+    pub sector: Option<String>,
+    pub market_cap: f64,
+    pub current_price: f64,
+    /// Simplified DCF intrinsic value estimate (see `/stock/{ticker}/intrinsic-value`).
+    pub estimated_intrinsic_value: f64,
+    /// (current_price − intrinsic_value) ÷ intrinsic_value × 100.
+    /// Negative = trading below intrinsic value; positive = trading above.
+    pub deviation_from_intrinsic_value_pct: f64,
+    /// Composite quality score (0–100) — see `/stock/{ticker}/quality`.
+    pub quality_score: f64,
+    /// Debt safety score (0–100), based on debt-to-equity ratio.
+    pub debt_safety_score: f64,
+    /// Piotroski F-Score (0–9) — see `/stock/{ticker}/piotroski`.
+    pub piotroski_score: u8,
+}
+
+/// Small/mid-cap "near miss" discovery results: candidates close to their DCF intrinsic
+/// value with quality fundamentals above a floor (not a ceiling) — names that a
+/// large-cap-only screener would never see, since they're excluded from its universe
+/// before any scoring happens.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DiscoveryResponse {
+    /// Sector slug, or null when screened across all sectors.
+    pub sector: Option<String>,
+    /// Market cap floor used for the candidate universe (USD).
+    pub market_cap_floor: f64,
+    /// Market cap ceiling used for the candidate universe (USD).
+    pub market_cap_ceiling: f64,
+    /// Deviation band applied around intrinsic value (percentage, both directions).
+    pub deviation_band_pct: f64,
+    /// Number of candidates fetched from the universe and evaluated.
+    pub candidates_screened: usize,
+    /// Sorted by |deviation_from_intrinsic_value_pct| ascending — closest to fair value first.
+    pub results: Vec<DiscoveryEntry>,
+    /// Educational disclaimer — not investment advice.
+    pub disclaimer: String,
+}
+
 // ── Search ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, ToSchema)]

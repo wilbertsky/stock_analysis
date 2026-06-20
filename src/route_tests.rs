@@ -29,6 +29,7 @@ mod tests {
             .route("/api/stock/{ticker}/quality",         get(routes::stock::get_quality))
             .route("/api/stock/{ticker}/momentum",        get(routes::stock::get_momentum))
             .route("/api/screener/{sector}",              get(routes::screener::get_sector_top_picks))
+            .route("/api/discovery",                      get(routes::discovery::get_discovery))
             // Auth routes under test
             .route("/api/auth/password",                  patch(routes::auth::change_password))
             .route("/api/auth/forgot-password",           post(routes::auth::forgot_password))
@@ -408,6 +409,85 @@ mod tests {
         assert!(body["score_labels"][0].as_str().unwrap().contains("Dividend"));
     }
 
+    // ── Discovery ─────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn discovery_invalid_sector_returns_422() {
+        let server = MockServer::start().await;
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+
+        let (status, body) = get_json(app, "/api/discovery?sector=made-up-sector").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body["error"].as_str().unwrap().contains("Unknown sector"));
+    }
+
+    #[tokio::test]
+    async fn discovery_empty_universe_still_returns_valid_response() {
+        let server = MockServer::start().await;
+        // FMP company-screener returns no candidates — response should still be well-formed.
+        mount_company_screener(&server, "[]").await;
+
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let (status, body) = get_json(app, "/api/discovery?sector=technology").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["sector"], "technology");
+        assert_eq!(body["candidates_screened"], 0);
+        assert_eq!(body["results"].as_array().unwrap().len(), 0);
+        assert!(body["disclaimer"].as_str().unwrap().len() > 20);
+    }
+
+    #[tokio::test]
+    async fn discovery_no_sector_screens_all_sectors() {
+        let server = MockServer::start().await;
+        mount_company_screener(&server, "[]").await;
+
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let (status, body) = get_json(app, "/api/discovery").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["sector"].is_null());
+    }
+
+    #[tokio::test]
+    async fn discovery_candidates_without_fundamentals_are_skipped_not_errored() {
+        let server = MockServer::start().await;
+        // One candidate from the universe, but no fundamentals mocked for it (empty
+        // arrays) — it should be silently skipped, not surfaced as an error.
+        let candidates = r#"[
+            {"symbol":"ABCD","companyName":"Test Co","marketCap":1000000000,
+             "sector":"Technology","industry":"Software","exchangeShortName":"NASDAQ",
+             "price":50.0,"isEtf":false,"isFund":false,"isActivelyTrading":true}
+        ]"#;
+        mount_company_screener(&server, candidates).await;
+        mount_income(&server, "[]").await;
+        mount_balance(&server, "[]").await;
+        mount_cashflow(&server, "[]").await;
+        mount_ratios(&server, "[]").await;
+        mount_key_metrics(&server, "[]").await;
+
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let (status, body) = get_json(app, "/api/discovery?sector=technology").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["candidates_screened"], 1);
+        assert_eq!(body["results"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn discovery_response_includes_market_cap_band() {
+        let server = MockServer::start().await;
+        mount_company_screener(&server, "[]").await;
+
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let (status, body) = get_json(app, "/api/discovery?sector=technology").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["market_cap_floor"], 300_000_000.0);
+        assert_eq!(body["market_cap_ceiling"], 5_000_000_000.0);
+        assert_eq!(body["deviation_band_pct"], 20.0);
+    }
+
     // ── Mount helpers ─────────────────────────────────────────────────────────
 
     async fn mount_income(server: &MockServer, body: &str) {
@@ -445,6 +525,14 @@ mod tests {
     async fn mount_key_metrics(server: &MockServer, body: &str) {
         Mock::given(method("GET"))
             .and(path("/key-metrics"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_company_screener(server: &MockServer, body: &str) {
+        Mock::given(method("GET"))
+            .and(path("/company-screener"))
             .respond_with(ResponseTemplate::new(200).set_body_string(body))
             .mount(server)
             .await;

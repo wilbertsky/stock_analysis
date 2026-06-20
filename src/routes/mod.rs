@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod auth;
+pub mod discovery;
 pub mod feedback;
 pub mod portfolio;
 pub mod screener;

@@ -44,3 +44,35 @@ pub const SUPPORTED_SECTORS: &str =
     "technology, healthcare, financials, energy, consumer-staples, \
      consumer-discretionary, industrials, materials, real-estate, \
      communication, utilities";
+
+/// Maps a sector slug to FMP's own `/stable/company-screener` sector taxonomy.
+/// Confirmed live against the company-screener endpoint: FMP returns exactly these
+/// eleven sector strings (Basic Materials, Communication Services, Consumer Cyclical,
+/// Consumer Defensive, Energy, Financial Services, Healthcare, Industrials, Real Estate,
+/// Technology, Utilities) — this is the inverse of that taxonomy, normalized to our slugs.
+/// Used by both `sp500.rs` (large-cap universe) and `routes/discovery.rs` (small/mid-cap
+/// universe) so both sides of the FMP screener integration share one mapping.
+pub fn slug_to_fmp_sector(slug: &str) -> Option<&'static str> {
+    match slug.to_lowercase().replace(' ', "-").as_str() {
+        "technology" | "tech" => Some("Technology"),
+        "healthcare" | "health" => Some("Healthcare"),
+        "financials" | "finance" | "financial-services" => Some("Financial Services"),
+        "energy" => Some("Energy"),
+        "consumer-staples" | "staples" | "consumer-defensive" => Some("Consumer Defensive"),
+        "consumer-discretionary" | "discretionary" | "consumer-cyclical" => Some("Consumer Cyclical"),
+        "industrials" => Some("Industrials"),
+        "materials" | "basic-materials" => Some("Basic Materials"),
+        "real-estate" | "realestate" => Some("Real Estate"),
+        "communication" | "communication-services" | "telecom" => Some("Communication Services"),
+        "utilities" => Some("Utilities"),
+        _ => None,
+    }
+}
+
+/// All eleven sector slugs in canonical form, for iterating when building a full
+/// large-cap universe across every sector (see `sp500.rs::load`).
+pub const ALL_SECTOR_SLUGS: &[&str] = &[
+    "technology", "healthcare", "financials", "energy", "consumer-staples",
+    "consumer-discretionary", "industrials", "materials", "real-estate",
+    "communication", "utilities",
+];

@@ -21,7 +21,8 @@ pub struct AppState {
     pub fmp_enc_key: Arc<[u8; 32]>,
     /// Shared HTTP client — all per-user FmpClient instances reuse this connection pool.
     pub http_client: Client,
-    /// S&P 500 constituent list indexed by sector slug.
+    /// Large-cap candidate list (FMP company-screener, not literal index membership)
+    /// indexed by sector slug.
     pub sp500: Arc<Sp500>,
     /// Resend API key for sending password reset emails via HTTPS (no SMTP ports needed).
     /// None when RESEND_API_KEY is not configured — email is disabled.
@@ -64,7 +65,7 @@ impl AppState {
         let edgar = Arc::new(EdgarClient::new(http_client.clone()).await);
         let yahoo = Arc::new(YahooClient::new(http_client.clone()));
         let providers = Arc::new(Providers::new(edgar, yahoo));
-        let sp500 = Arc::new(Sp500::load(&http_client).await);
+        let sp500 = Arc::new(Sp500::load(&fmp).await);
 
         let resend_api_key = std::env::var("RESEND_API_KEY").ok()
             .filter(|k| !k.is_empty())

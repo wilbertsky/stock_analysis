@@ -77,6 +77,7 @@ impl Modify for BearerAuth {
         routes::stock::get_company_profile,
         routes::stock::get_company_news,
         routes::screener::get_sector_top_picks,
+        routes::discovery::get_discovery,
         routes::admin::create_invite,
         routes::admin::list_invites,
         routes::auth::register,
@@ -117,6 +118,8 @@ impl Modify for BearerAuth {
         MomentumResponse,
         ScreenerEntry,
         SectorScreenerResponse,
+        DiscoveryEntry,
+        DiscoveryResponse,
         StockSearchResult,
         StockSearchResponse,
         CompanyProfileResponse,
@@ -154,6 +157,7 @@ impl Modify for BearerAuth {
         (name = "feedback", description = "User feedback"),
         (name = "stock", description = "Stock valuation and analysis"),
         (name = "screener", description = "Sector screener"),
+        (name = "discovery", description = "Small/mid-cap near-miss value discovery screener"),
         (name = "auth", description = "User accounts and authentication"),
         (name = "portfolio", description = "Portfolio management and performance tracking"),
     )
@@ -198,6 +202,7 @@ async fn main() {
         .routes(routes!(routes::stock::get_company_profile))
         .routes(routes!(routes::stock::get_company_news))
         .routes(routes!(routes::screener::get_sector_top_picks))
+        .routes(routes!(routes::discovery::get_discovery))
         .routes(routes!(routes::admin::create_invite))
         .routes(routes!(routes::admin::list_invites))
         .routes(routes!(routes::auth::register))

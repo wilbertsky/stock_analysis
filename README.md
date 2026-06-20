@@ -15,6 +15,7 @@ A REST API built in Rust with [Axum](https://github.com/tokio-rs/axum) that prov
 - **Momentum Score** — 3/6/12-month price returns relative to the S&P 500 (0–100)
 - **Summary** — Fundamentals, valuations, and momentum in a single endpoint
 - **Sector Screener** — Ranks large-cap stocks within a sector using a weighted composite score that adapts to sector characteristics
+- **Discovery Screener** — Surfaces small/mid-cap stocks close to their DCF intrinsic value with fundamentals above a quality floor — names too small to ever enter the sector screener's large-cap-only universe
 
 ## Getting Started
 
@@ -71,6 +72,23 @@ Each sector screens up to 20 large-cap stocks (pre-filtered by market cap) and r
 
 The response includes `scoring_model`, `score_labels`, and `score_weights` fields so clients can display the correct labels dynamically without hardcoding.
 
+The large-cap candidate list is sourced from FMP's `/stable/company-screener` endpoint (market cap ≥ $10B per sector), not literal S&P 500 / Nasdaq 100 index membership — FMP's own index-constituent endpoints aren't available on the Starter plan, and the free third-party datasets this previously depended on are no longer reachable. A market-cap-band screen is a close approximation of "large cap" for scoring purposes but won't perfectly match actual index composition.
+
+### Discovery Screener
+
+| Method | Path | Description |
+|--------|------|--------------|
+| `GET` | `/api/discovery` | Near-miss small/mid-cap value candidates |
+
+Optional query param: `sector` (same slugs as the sector screener; omit to screen across all sectors).
+
+The sector screener only ever evaluates large-cap stocks (market cap ≥ $10B) — smaller companies never enter its candidate pool, regardless of how they'd score. The discovery screener is a separate, additive endpoint that sources a small/mid-cap universe (market cap $300M–$5B, via the same FMP company-screener) and surfaces candidates that are:
+
+1. **Close to fair value** — current price within ±20% of the DCF intrinsic value estimate (`/stock/{ticker}/intrinsic-value`'s methodology), in either direction. Slightly-above candidates are included alongside slightly-below ones because the underlying DCF formula tends to be conservative for asset-light, high-growth businesses with low book value — the same companies most likely to be overlooked by a large-cap-only or Graham-Number-style screen.
+2. **Above a quality floor, not a quality ceiling** — quality score ≥ 40, debt safety score ≥ 40 (both reuse the same 0–100 scores documented above), and Piotroski F-Score ≥ 4 out of 9. The Piotroski threshold is grounded in Piotroski's original research, which found the predictive edge concentrated in avoiding the distress decile (scores 0–2), not in requiring a top score. The quality/debt-safety floors reuse the sector screener's own "Average" tier boundary (≥40) rather than an arbitrary number.
+
+Results are sorted by closeness to intrinsic value. The ±20% band and the $300M–$5B market-cap range are practical starting heuristics, not backtested constants — unlike the Piotroski cutoff, there's no equivalent published study defining "near miss to DCF intrinsic value." Treat them as tunable, not authoritative.
+
 ### Examples
 
 ```bash
@@ -91,6 +109,12 @@ curl http://localhost:8080/api/screener/technology
 
 # Top-ranked financial stocks (Financials model)
 curl http://localhost:8080/api/screener/financials
+
+# Small/mid-cap near-miss value candidates, technology sector only
+curl http://localhost:8080/api/discovery?sector=technology
+
+# Same, across all sectors
+curl http://localhost:8080/api/discovery
 ```
 
 ## Analysis Methods
@@ -195,6 +219,8 @@ Key limitations to keep in mind:
 - **Weights are not backtested** — The composite scoring weights are based on factor investing research but have not been validated against historical returns for this specific combination.
 - **Sector models are heuristics** — The five models reflect broadly accepted analytical frameworks for each sector type, but individual companies within a sector may warrant a different lens.
 
+The discovery screener carries the same caveats, plus one more specific to its design: clearing a quality *floor* is a deliberately low bar — it excludes obvious distress, not weak fundamentals generally. A discovery result is a starting point for due diligence, not a vetted "good" company in the way a high sector-screener composite score is intended to suggest.
+
 Use these scores to build a shortlist of companies worth deeper investigation — not as a substitute for understanding the business.
 
 ## Disclaimer
@@ -207,6 +233,8 @@ All scores and outputs provided by this API are for **educational purposes only*
 - 5-year and 10-year CAGRs require sufficient filing history and will return `null` if data is unavailable
 - ROIC, Book Value/Share, and FCF/Share may return `null` if not reported in EDGAR filings
 - The sector screener fetches data for up to 20 stocks plus SPY concurrently — allow 15–30 seconds
+- The discovery screener fetches up to 40 small/mid-cap candidates concurrently — also allow 15–30 seconds
+- Both screeners source their candidate universe from FMP's `/stable/company-screener` (market-cap-band filtered), not literal index membership — see the Sector Screener and Discovery Screener sections above
 
 ## License
 
