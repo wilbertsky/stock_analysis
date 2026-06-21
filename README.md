@@ -15,7 +15,7 @@ A REST API built in Rust with [Axum](https://github.com/tokio-rs/axum) that prov
 - **Momentum Score** — 3/6/12-month price returns relative to the S&P 500 (0–100)
 - **Summary** — Fundamentals, valuations, and momentum in a single endpoint
 - **Sector Screener** — Ranks large-cap stocks within a sector using a weighted composite score that adapts to sector characteristics
-- **Discovery Screener** — Surfaces small/mid-cap stocks close to their DCF intrinsic value with fundamentals above a quality floor — names too small to ever enter the sector screener's large-cap-only universe
+- **Discovery Screener** — Surfaces small/mid-cap stocks close to their Graham Number with fundamentals above a quality floor — names too small to ever enter the sector screener's large-cap-only universe
 
 ## Getting Started
 
@@ -80,14 +80,18 @@ The large-cap candidate list is sourced from FMP's `/stable/company-screener` en
 |--------|------|--------------|
 | `GET` | `/api/discovery` | Near-miss small/mid-cap value candidates |
 
-Optional query param: `sector` (same slugs as the sector screener; omit to screen across all sectors).
+Required query param: `sector` (same slugs as the sector screener). Screening across all sectors at once was tried and dropped — with the same fixed per-bucket candidate budget spread across the whole market instead of concentrated in one sector, it consistently surfaced fewer (often just one) results than picking any individual sector, which was confusing rather than useful.
 
 The sector screener only ever evaluates large-cap stocks (market cap ≥ $10B) — smaller companies never enter its candidate pool, regardless of how they'd score. The discovery screener is a separate, additive endpoint that sources a small/mid-cap universe (market cap $300M–$5B, via the same FMP company-screener) and surfaces candidates that are:
 
-1. **Close to fair value** — current price within ±20% of the DCF intrinsic value estimate (`/stock/{ticker}/intrinsic-value`'s methodology), in either direction. Slightly-above candidates are included alongside slightly-below ones because the underlying DCF formula tends to be conservative for asset-light, high-growth businesses with low book value — the same companies most likely to be overlooked by a large-cap-only or Graham-Number-style screen.
+1. **Close to fair value** — current price within ±20% of the Graham Number (`/stock/{ticker}/graham-number`'s methodology: √(22.5 × EPS × BVPS)), in either direction. Slightly-above candidates are included alongside slightly-below ones because the formula tends to be conservative for asset-light, high-growth businesses with low book value.
+
+   Graham Number was chosen over the DCF intrinsic value used elsewhere in this app specifically for this screener — verified live that the DCF formula's 10-year EPS-growth compounding produces extremely unstable values across a broad small/mid-cap universe (deviations of -90%+ and +300%+ from price were common, since a single volatile growth-rate input gets compounded forward a decade). Graham Number's EPS × BVPS calculation has no compounding and stayed far more bounded in the same test.
 2. **Above a quality floor, not a quality ceiling** — quality score ≥ 40, debt safety score ≥ 40 (both reuse the same 0–100 scores documented above), and Piotroski F-Score ≥ 4 out of 9. The Piotroski threshold is grounded in Piotroski's original research, which found the predictive edge concentrated in avoiding the distress decile (scores 0–2), not in requiring a top score. The quality/debt-safety floors reuse the sector screener's own "Average" tier boundary (≥40) rather than an arbitrary number.
 
-Results are sorted by closeness to intrinsic value. The ±20% band and the $300M–$5B market-cap range are practical starting heuristics, not backtested constants — unlike the Piotroski cutoff, there's no equivalent published study defining "near miss to DCF intrinsic value." Treat them as tunable, not authoritative.
+   Known limitation: `quality_score` and `debt_safety_score` depend on `gross_profit` and `debt_to_equity_ratio` being present in the underlying data, and EDGAR-sourced fundamentals for smaller filers are noticeably sparser on these fields than for large caps — verified live that several otherwise-reasonable small-cap near-misses (one with a real 16.8% ROE) were zeroed out by missing data rather than genuinely weak fundamentals. This is a real characteristic of the small-cap data, not a bug, but it does mean the quality floor currently filters out some candidates it shouldn't.
+
+Results are sorted by closeness to the Graham Number. The ±20% band and the $300M–$5B market-cap range are practical starting heuristics, not backtested constants — unlike the Piotroski cutoff, there's no equivalent published study defining "near miss" for this purpose. Treat them as tunable, not authoritative.
 
 ### Examples
 
@@ -110,11 +114,8 @@ curl http://localhost:8080/api/screener/technology
 # Top-ranked financial stocks (Financials model)
 curl http://localhost:8080/api/screener/financials
 
-# Small/mid-cap near-miss value candidates, technology sector only
+# Small/mid-cap near-miss value candidates (sector is required)
 curl http://localhost:8080/api/discovery?sector=technology
-
-# Same, across all sectors
-curl http://localhost:8080/api/discovery
 ```
 
 ## Analysis Methods

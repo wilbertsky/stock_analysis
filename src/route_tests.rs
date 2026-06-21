@@ -437,16 +437,19 @@ mod tests {
         assert!(body["disclaimer"].as_str().unwrap().len() > 20);
     }
 
+    /// Screening across all sectors at once was tried and dropped — with the same fixed
+    /// per-bucket candidate budget spread across the whole market, it consistently
+    /// surfaced fewer results than picking any individual sector (verified live: 1 result
+    /// for "all sectors" vs. 1-3 for any single sector, using an identical 48-candidate
+    /// budget). A sector is now required.
     #[tokio::test]
-    async fn discovery_no_sector_screens_all_sectors() {
+    async fn discovery_missing_sector_returns_400() {
         let server = MockServer::start().await;
-        mount_company_screener(&server, "[]").await;
-
         let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
         let (status, body) = get_json(app, "/api/discovery").await;
 
-        assert_eq!(status, StatusCode::OK);
-        assert!(body["sector"].is_null());
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("sector"));
     }
 
     #[tokio::test]
@@ -486,6 +489,75 @@ mod tests {
         assert_eq!(body["market_cap_floor"], 300_000_000.0);
         assert_eq!(body["market_cap_ceiling"], 5_000_000_000.0);
         assert_eq!(body["deviation_band_pct"], 20.0);
+    }
+
+    /// A candidate with a Graham Number near-miss but no debt_to_equity/gross_profit/ROE
+    /// data (from either EDGAR or FMP) would fail the quality floor (quality=0,
+    /// debt_safety=0) — but since that failure is driven by missing data rather than
+    /// genuinely bad fundamentals, it should be included with `missing_data_fields` set,
+    /// not silently dropped.
+    #[tokio::test]
+    async fn discovery_includes_near_miss_candidate_despite_missing_quality_data() {
+        let server = MockServer::start().await;
+        // eps=2.0, bvps=20.0 -> graham_number = sqrt(22.5*2*20) = 30.0; price=30.0 -> 0% deviation
+        let candidates = r#"[
+            {"symbol":"TSTX","companyName":"Test Co","marketCap":1000000000,
+             "sector":"Technology","industry":"Software","exchangeShortName":"NASDAQ",
+             "price":30.0,"isEtf":false,"isFund":false,"isActivelyTrading":true}
+        ]"#;
+        mount_company_screener(&server, candidates).await;
+        // No grossProfit field -> gross_margin missing
+        mount_income(&server, r#"[{"date":"2024-12-31","revenue":1000000000,"netIncome":50000000,"eps":2.0,"weightedAverageShsOut":25000000}]"#).await;
+        mount_balance(&server, r#"[{"date":"2024-12-31","totalAssets":500000000,"totalCurrentAssets":100000000,"totalCurrentLiabilities":50000000,"longTermDebt":50000000}]"#).await;
+        mount_cashflow(&server, r#"[{"date":"2024-12-31","operatingCashFlow":60000000}]"#).await;
+        // bookValuePerShare present (needed for Graham Number) but no debtToEquityRatio -> debt_to_equity missing
+        mount_ratios(&server, r#"[{"date":"2024-12-31","bookValuePerShare":20.0}]"#).await;
+        // Empty -> return_on_equity missing
+        mount_key_metrics(&server, "[]").await;
+
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let (status, body) = get_json(app, "/api/discovery?sector=technology").await;
+
+        assert_eq!(status, StatusCode::OK);
+        let results = body["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1, "candidate should be included despite missing data");
+        let entry = &results[0];
+        assert_eq!(entry["ticker"], "TSTX");
+        assert_eq!(entry["quality_score"], 0.0);
+        assert_eq!(entry["debt_safety_score"], 0.0);
+        let missing = entry["missing_data_fields"].as_array().unwrap();
+        let missing: Vec<&str> = missing.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(missing.contains(&"debt_to_equity"));
+        assert!(missing.contains(&"gross_margin"));
+        assert!(missing.contains(&"return_on_equity"));
+    }
+
+    /// Same near-miss setup as above, but this time all three fields ARE present with
+    /// genuinely weak values — the candidate should still be excluded, proving the
+    /// quality floor wasn't made toothless by the missing-data leniency above.
+    #[tokio::test]
+    async fn discovery_excludes_near_miss_candidate_with_complete_weak_data() {
+        let server = MockServer::start().await;
+        let candidates = r#"[
+            {"symbol":"WEAK","companyName":"Weak Co","marketCap":1000000000,
+             "sector":"Technology","industry":"Software","exchangeShortName":"NASDAQ",
+             "price":30.0,"isEtf":false,"isFund":false,"isActivelyTrading":true}
+        ]"#;
+        mount_company_screener(&server, candidates).await;
+        mount_income(&server, r#"[{"date":"2024-12-31","revenue":1000000000,"grossProfit":50000000,"netIncome":50000000,"eps":2.0,"weightedAverageShsOut":25000000}]"#).await;
+        mount_balance(&server, r#"[{"date":"2024-12-31","totalAssets":500000000,"totalCurrentAssets":100000000,"totalCurrentLiabilities":50000000,"longTermDebt":50000000}]"#).await;
+        mount_cashflow(&server, r#"[{"date":"2024-12-31","operatingCashFlow":60000000}]"#).await;
+        // Fully populated, but debtToEquityRatio is very high (weak) — D/E 5.0 -> debt_safety_score 0
+        mount_ratios(&server, r#"[{"date":"2024-12-31","bookValuePerShare":20.0,"debtToEquityRatio":5.0}]"#).await;
+        // Fully populated, but ROE is negative (weak)
+        mount_key_metrics(&server, r#"[{"date":"2024-12-31","returnOnEquity":-0.10}]"#).await;
+
+        let app = build_test_router(AppState::with_base_url("key".into(), server.uri()));
+        let (status, body) = get_json(app, "/api/discovery?sector=technology").await;
+
+        assert_eq!(status, StatusCode::OK);
+        let results = body["results"].as_array().unwrap();
+        assert_eq!(results.len(), 0, "candidate with complete-but-weak data should still be excluded");
     }
 
     // ── Mount helpers ─────────────────────────────────────────────────────────

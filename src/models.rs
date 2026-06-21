@@ -238,17 +238,29 @@ pub struct DiscoveryEntry {
     pub sector: Option<String>,
     pub market_cap: f64,
     pub current_price: f64,
-    /// Simplified DCF intrinsic value estimate (see `/stock/{ticker}/intrinsic-value`).
-    pub estimated_intrinsic_value: f64,
-    /// (current_price − intrinsic_value) ÷ intrinsic_value × 100.
-    /// Negative = trading below intrinsic value; positive = trading above.
-    pub deviation_from_intrinsic_value_pct: f64,
+    /// Graham Number: sqrt(22.5 × EPS × BVPS) (see `/stock/{ticker}/graham-number`).
+    /// Used instead of the DCF intrinsic value because the DCF formula's 10-year
+    /// growth-rate compounding proved far too unstable across a broad, noisy
+    /// small/mid-cap universe — Graham Number's EPS×BVPS calculation has no
+    /// compounding and is much more bounded.
+    pub graham_number: f64,
+    /// (current_price − graham_number) ÷ graham_number × 100.
+    /// Negative = trading below Graham Number; positive = trading above.
+    pub deviation_from_graham_number_pct: f64,
     /// Composite quality score (0–100) — see `/stock/{ticker}/quality`.
     pub quality_score: f64,
     /// Debt safety score (0–100), based on debt-to-equity ratio.
     pub debt_safety_score: f64,
     /// Piotroski F-Score (0–9) — see `/stock/{ticker}/piotroski`.
     pub piotroski_score: u8,
+    /// Underlying fields that were unavailable from both EDGAR and FMP (e.g.
+    /// "debt_to_equity", "gross_margin", "return_on_equity") for this candidate, after
+    /// best-effort backfill between the two data sources. Empty means all data was
+    /// available. When non-empty, this candidate may have failed the quality floor (or
+    /// scored lower than warranted) due to missing data rather than genuinely weak
+    /// fundamentals — it's still included rather than silently dropped, since the
+    /// absence of data isn't evidence of a problem.
+    pub missing_data_fields: Vec<String>,
 }
 
 /// Small/mid-cap "near miss" discovery results: candidates close to their DCF intrinsic
@@ -257,8 +269,8 @@ pub struct DiscoveryEntry {
 /// before any scoring happens.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DiscoveryResponse {
-    /// Sector slug, or null when screened across all sectors.
-    pub sector: Option<String>,
+    /// Sector slug this response was screened against.
+    pub sector: String,
     /// Market cap floor used for the candidate universe (USD).
     pub market_cap_floor: f64,
     /// Market cap ceiling used for the candidate universe (USD).

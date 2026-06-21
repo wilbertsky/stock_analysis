@@ -459,20 +459,27 @@ pub const DISCOVERY_DEBT_SAFETY_FLOOR: f64 = 40.0;
 /// blue chips.
 pub const DISCOVERY_PIOTROSKI_FLOOR: u8 = 4;
 
-/// "Near miss" band: candidates within this percentage of estimated intrinsic value
+/// "Near miss" band: candidates within this percentage of a fair-value estimate
 /// (above or below) are considered close enough to be worth a second look. This is a
 /// practical starting heuristic, not a backtested constant — unlike the floors above,
-/// there's no equivalent published study defining "near miss to DCF intrinsic value"
-/// the way there is for Piotroski's distress cutoff.
+/// there's no equivalent published study defining "near miss" the way there is for
+/// Piotroski's distress cutoff.
 pub const DISCOVERY_DEVIATION_BAND_PCT: f64 = 20.0;
 
-/// Percentage deviation of `current_price` from `intrinsic_value`. Negative means the
-/// price is below intrinsic value (undervalued); positive means above (overvalued).
-pub fn dcf_deviation_pct(current_price: f64, intrinsic_value: f64) -> Option<f64> {
-    if intrinsic_value <= 0.0 {
+/// Percentage deviation of `current_price` from a per-share fair-value estimate
+/// (Graham Number, DCF intrinsic value, or any similar reference price). Negative
+/// means price is below the reference (undervalued); positive means above.
+/// Used by the discovery screener with Graham Number as the reference value — Graham
+/// Number was chosen over the DCF intrinsic value used elsewhere in this app because
+/// the DCF formula compounds an EPS growth-rate input 10 years forward, which is far
+/// too unstable across a broad small/mid-cap universe (verified live: deviations of
+/// -90%+ and +300%+ were common, vs. Graham Number's much more bounded EPS×BVPS
+/// calculation with no compounding).
+pub fn value_deviation_pct(current_price: f64, reference_value: f64) -> Option<f64> {
+    if reference_value <= 0.0 {
         return None;
     }
-    Some((current_price - intrinsic_value) / intrinsic_value * 100.0)
+    Some((current_price - reference_value) / reference_value * 100.0)
 }
 
 /// `true` if a candidate clears all three discovery quality-floor gates.
@@ -488,7 +495,7 @@ pub fn clears_discovery_quality_floor(
         && piotroski_score >= DISCOVERY_PIOTROSKI_FLOOR
 }
 
-/// `true` if `deviation_pct` (from `dcf_deviation_pct`) falls within the near-miss band.
+/// `true` if `deviation_pct` (from `value_deviation_pct`) falls within the near-miss band.
 pub fn is_near_miss(deviation_pct: f64) -> bool {
     deviation_pct.abs() <= DISCOVERY_DEVIATION_BAND_PCT
 }
@@ -1195,36 +1202,36 @@ mod tests {
         assert_eq!(fcf_yield_score(&[], 100.0), 0.0);
     }
 
-    // ── dcf_deviation_pct ─────────────────────────────────────────────────────
+    // ── value_deviation_pct ─────────────────────────────────────────────────────
 
     #[test]
     fn deviation_below_intrinsic_value_is_negative() {
         // price $80 vs intrinsic value $100 → -20%
-        let d = dcf_deviation_pct(80.0, 100.0).unwrap();
+        let d = value_deviation_pct(80.0, 100.0).unwrap();
         assert!((d - (-20.0)).abs() < 1e-9);
     }
 
     #[test]
     fn deviation_above_intrinsic_value_is_positive() {
         // price $120 vs intrinsic value $100 → +20%
-        let d = dcf_deviation_pct(120.0, 100.0).unwrap();
+        let d = value_deviation_pct(120.0, 100.0).unwrap();
         assert!((d - 20.0).abs() < 1e-9);
     }
 
     #[test]
     fn deviation_at_intrinsic_value_is_zero() {
-        let d = dcf_deviation_pct(100.0, 100.0).unwrap();
+        let d = value_deviation_pct(100.0, 100.0).unwrap();
         assert!(d.abs() < 1e-9);
     }
 
     #[test]
     fn deviation_zero_intrinsic_value_is_none() {
-        assert_eq!(dcf_deviation_pct(100.0, 0.0), None);
+        assert_eq!(value_deviation_pct(100.0, 0.0), None);
     }
 
     #[test]
     fn deviation_negative_intrinsic_value_is_none() {
-        assert_eq!(dcf_deviation_pct(100.0, -10.0), None);
+        assert_eq!(value_deviation_pct(100.0, -10.0), None);
     }
 
     // ── is_near_miss ──────────────────────────────────────────────────────────
