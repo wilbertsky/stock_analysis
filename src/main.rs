@@ -43,7 +43,7 @@ impl Modify for BearerAuth {
 #[openapi(
     info(
         title = "Stock Analysis API",
-        version = "0.2.0",
+        version = env!("CARGO_PKG_VERSION"),
         description = "Quantitative stock analysis using publicly available financial data: \
             DCF intrinsic value, Graham Number, PEG ratio, Piotroski F-Score, quality scoring, \
             momentum, sector screener, user accounts, and portfolio tracking.\n\n\
