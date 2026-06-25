@@ -186,6 +186,58 @@ async fn main() {
         .await
         .expect("Database migration failed");
 
+    // Background cache refresh — populates discovery and screener caches for all sectors
+    // on a 12h cycle so requests are served instantly from cache rather than hammering FMP
+    // on every click. Discovery uses 60s inter-sector delays (FMP rate-limit headroom);
+    // screener uses EDGAR/Yahoo as primary so no delay is needed there.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            // Initial delay: let the boot-time Sp500::load() FMP calls settle before the
+            // background task starts adding more.
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            loop {
+                tracing::info!("Background cache refresh: starting discovery");
+                let mut first = true;
+                for &slug in sectors::ALL_SECTOR_SLUGS {
+                    if !first {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    }
+                    first = false;
+                    if let Some(fmp_sector) = sectors::slug_to_fmp_sector(slug) {
+                        match routes::discovery::run_discovery(&state.fmp, slug, fmp_sector).await {
+                            Ok(response) => {
+                                state.discovery_cache.write().await.insert(
+                                    slug.to_owned(),
+                                    (std::time::Instant::now(), response),
+                                );
+                                tracing::info!(sector = slug, "Discovery cache refreshed");
+                            }
+                            Err(e) => tracing::warn!(sector = slug, "Discovery cache refresh failed: {e}"),
+                        }
+                    }
+                }
+
+                tracing::info!("Background cache refresh: starting screener");
+                for &slug in sectors::ALL_SECTOR_SLUGS {
+                    match routes::screener::run_screener(&state, slug).await {
+                        Ok(response) => {
+                            state.screener_cache.write().await.insert(
+                                slug.to_owned(),
+                                (std::time::Instant::now(), response),
+                            );
+                            tracing::info!(sector = slug, "Screener cache refreshed");
+                        }
+                        Err(e) => tracing::warn!(sector = slug, "Screener cache refresh failed: {e}"),
+                    }
+                }
+
+                tracing::info!("Background cache refresh: complete, sleeping 12h");
+                tokio::time::sleep(std::time::Duration::from_secs(12 * 3600)).await;
+            }
+        });
+    }
+
     let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .routes(routes!(routes::health_check))
         .routes(routes!(routes::stock::get_fundamentals))

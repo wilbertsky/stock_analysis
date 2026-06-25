@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::{Duration, Instant}};
 
 use axum::{
     extract::{Path, State},
@@ -15,6 +15,8 @@ use crate::{
     sectors,
     state::AppState,
 };
+
+const CACHE_TTL: Duration = Duration::from_secs(12 * 3600);
 
 /// Shared educational disclaimer — also used by `routes::discovery`.
 pub(crate) const DISCLAIMER: &str = "Scores are calculated from publicly available financial data for \
@@ -116,11 +118,27 @@ pub async fn get_sector_top_picks(
     _auth: AuthUser,
     Path(sector): Path<String>,
 ) -> Result<Json<SectorScreenerResponse>, AppError> {
-    // Get tickers from the FMP-sourced large-cap list, falling back to curated sectors.rs lists.
+    {
+        let cache = state.screener_cache.read().await;
+        if let Some((cached_at, response)) = cache.get(&sector) {
+            if cached_at.elapsed() < CACHE_TTL {
+                return Ok(Json(response.clone()));
+            }
+        }
+    }
+
+    let response = run_screener(&state, &sector).await?;
+    state.screener_cache.write().await.insert(sector, (Instant::now(), response.clone()));
+    Ok(Json(response))
+}
+
+/// Core screener logic — separated from the HTTP handler so the background refresh
+/// task can call it directly without going through HTTP.
+pub async fn run_screener(state: &AppState, sector: &str) -> Result<SectorScreenerResponse, AppError> {
     let candidate_tickers: Vec<String> = if state.sp500.is_loaded() {
         state
             .sp500
-            .tickers_for_sector(&sector)
+            .tickers_for_sector(sector)
             .ok_or_else(|| {
                 AppError::Unprocessable(format!(
                     "Unknown sector '{}'. Supported: {}",
@@ -130,7 +148,7 @@ pub async fn get_sector_top_picks(
             })?
             .to_vec()
     } else {
-        sectors::tickers_for_sector(&sector)
+        sectors::tickers_for_sector(sector)
             .ok_or_else(|| {
                 AppError::Unprocessable(format!(
                     "Unknown sector '{}'. Supported: {}",
@@ -143,21 +161,12 @@ pub async fn get_sector_top_picks(
             .collect()
     };
 
-    let model = sector_model(&sector);
-
-    // For the screener we use EDGAR/Yahoo as primary and the server-level FMP
-    // key as a fallback. This ensures fundamental data is always available even
-    // if EDGAR's CIK map hasn't loaded or a ticker lookup fails.
+    let model = sector_model(sector);
     let providers = Arc::new(state.providers.with_fmp(state.fmp.clone()));
-
-    // Pre-filter to top SCORE_TOP_N by market cap to keep scoring time reasonable.
     let tickers_to_score = top_by_market_cap(&providers, &candidate_tickers).await;
-
-    // Fetch SPY prices once — shared benchmark for all momentum calculations.
     let spy_prices = providers.historical_prices("SPY", 260).await.unwrap_or_default();
     let spy_prices = Arc::new(spy_prices);
 
-    // Score each ticker concurrently, limiting to 5 in-flight at a time.
     let sem = Arc::new(tokio::sync::Semaphore::new(5));
     let mut set = JoinSet::new();
 
@@ -186,15 +195,15 @@ pub async fn get_sector_top_picks(
     });
 
     let stocks_analyzed = results.len();
-    Ok(Json(SectorScreenerResponse {
-        sector,
+    Ok(SectorScreenerResponse {
+        sector: sector.to_owned(),
         scoring_model: model.name().to_owned(),
         score_labels: model.labels(),
         score_weights: model.weights(),
         stocks_analyzed,
         results,
         disclaimer: DISCLAIMER.to_owned(),
-    }))
+    })
 }
 
 /// Returns up to `SCORE_TOP_N` tickers sorted by market cap descending.

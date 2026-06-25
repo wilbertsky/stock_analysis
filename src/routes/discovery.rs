@@ -17,7 +17,7 @@
 //!
 //! Deliberately does not touch `screener.rs` or its composite scoring model.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::{Duration, Instant}};
 
 use axum::{
     extract::{Query, State},
@@ -57,6 +57,10 @@ const MARKET_CAP_BUCKETS: u64 = 8;
 /// Candidates fetched from FMP per bucket. 8 buckets × 30 ≈ 240 candidates total.
 /// FMP-only fundamentals calls keep response time within ~5s even at this budget.
 const PER_BUCKET_LIMIT: u32 = 30;
+
+/// How long a cached discovery response stays fresh. Graham Numbers and quality scores
+/// are anchored to annual filings, so 12h is a reasonable staleness window.
+const CACHE_TTL: Duration = Duration::from_secs(12 * 3600);
 
 #[derive(Debug, Deserialize)]
 pub struct DiscoveryQuery {
@@ -114,12 +118,28 @@ pub async fn get_discovery(
         ))
     })?;
 
-    // Fetch each market-cap sub-range and merge, deduping by symbol in case a company
-    // sits exactly on a bucket boundary. Concurrency is capped (not fire-all-8-at-once)
-    // — verified live that firing all 8 bucket requests simultaneously could trip FMP's
-    // rate limit within a single request, silently dropping whichever buckets got
-    // rate-limited and producing wildly inconsistent candidate counts between otherwise
-    // identical calls.
+    {
+        let cache = state.discovery_cache.read().await;
+        if let Some((cached_at, response)) = cache.get(&sector) {
+            if cached_at.elapsed() < CACHE_TTL {
+                return Ok(Json(response.clone()));
+            }
+        }
+    }
+
+    let response = run_discovery(&state.fmp, &sector, fmp_sector).await?;
+    state.discovery_cache.write().await.insert(sector, (Instant::now(), response.clone()));
+    Ok(Json(response))
+}
+
+/// Core discovery logic — separated from the HTTP handler so the background refresh
+/// task can call it directly without going through HTTP.
+pub async fn run_discovery(
+    fmp: &Arc<FmpClient>,
+    sector: &str,
+    fmp_sector: &str,
+) -> Result<DiscoveryResponse, AppError> {
+    let fmp_sector = fmp_sector.to_owned();
     let bucket_width = (SMALL_MID_CAP_CEILING - SMALL_MID_CAP_FLOOR) / MARKET_CAP_BUCKETS;
     let bucket_sem = Arc::new(tokio::sync::Semaphore::new(3));
     let mut bucket_set = JoinSet::new();
@@ -130,11 +150,12 @@ pub async fn get_discovery(
         } else {
             floor + bucket_width
         };
-        let fmp = state.fmp.clone();
+        let fmp = fmp.clone();
+        let fmp_sector = fmp_sector.clone();
         let bucket_sem = bucket_sem.clone();
         bucket_set.spawn(async move {
             let _permit = bucket_sem.acquire().await.unwrap();
-            (i, fmp.company_screener(floor, Some(ceiling), Some(fmp_sector), PER_BUCKET_LIMIT).await)
+            (i, fmp.company_screener(floor, Some(ceiling), Some(&fmp_sector), PER_BUCKET_LIMIT).await)
         });
     }
 
@@ -152,10 +173,6 @@ pub async fn get_discovery(
     }
     let candidates: Vec<ScreenerCandidate> = by_symbol.into_values().collect();
     let candidates_screened = candidates.len();
-
-    // Same provider chain (EDGAR/Yahoo primary, server-level FMP fallback) used
-    // everywhere else in this app for per-ticker fundamentals.
-    let fmp = state.fmp.clone();
 
     let sem = Arc::new(tokio::sync::Semaphore::new(5));
     let mut set = JoinSet::new();
@@ -183,15 +200,15 @@ pub async fn get_discovery(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    Ok(Json(DiscoveryResponse {
-        sector,
+    Ok(DiscoveryResponse {
+        sector: sector.to_owned(),
         market_cap_floor: SMALL_MID_CAP_FLOOR as f64,
         market_cap_ceiling: SMALL_MID_CAP_CEILING as f64,
         deviation_band_pct: calculations::DISCOVERY_DEVIATION_BAND_PCT,
         candidates_screened,
         results,
         disclaimer: DISCLAIMER.to_owned(),
-    }))
+    })
 }
 
 /// Fetches fundamentals for one candidate and applies the near-miss + quality-floor

@@ -192,7 +192,7 @@ pub struct MomentumResponse {
 /// A single stock's scores within a sector screener result.
 /// All four scores are normalized 0–100. Their meaning depends on the sector
 /// scoring model (see `score_labels` and `score_weights` on the response).
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ScreenerEntry {
     pub ticker: String,
     /// Score A (0–100) — primary signal; see `score_labels[0]`
@@ -211,7 +211,7 @@ pub struct ScreenerEntry {
 }
 
 /// Ranked sector screener results based on composite scoring.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SectorScreenerResponse {
     pub sector: String,
     /// Name of the scoring model applied (e.g. "Standard", "Financials", "Real Estate")
@@ -231,7 +231,7 @@ pub struct SectorScreenerResponse {
 
 /// A small/mid-cap candidate that cleared the discovery screener's quality floor and
 /// falls within the near-miss band around its DCF intrinsic value.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct DiscoveryEntry {
     pub ticker: String,
     pub company_name: String,
@@ -267,7 +267,7 @@ pub struct DiscoveryEntry {
 /// value with quality fundamentals above a floor (not a ceiling) — names that a
 /// large-cap-only screener would never see, since they're excluded from its universe
 /// before any scoring happens.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct DiscoveryResponse {
     /// Sector slug this response was screened against.
     pub sector: String,

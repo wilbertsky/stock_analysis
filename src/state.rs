@@ -1,9 +1,13 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use base64::Engine as _;
 use reqwest::Client;
 use sqlx::PgPool;
+use tokio::sync::RwLock;
 use crate::edgar::EdgarClient;
 use crate::fmp::FmpClient;
+use crate::models::{DiscoveryResponse, SectorScreenerResponse};
 use crate::providers::Providers;
 use crate::sp500::Sp500;
 use crate::yahoo::YahooClient;
@@ -32,6 +36,11 @@ pub struct AppState {
     pub email_from: Arc<str>,
     /// App base URL used in reset email links (APP_URL env var).
     pub app_url: Arc<str>,
+    /// Cached discovery results per sector slug. Populated on first request and refreshed
+    /// by the background task. Serves subsequent requests instantly without FMP calls.
+    pub discovery_cache: Arc<RwLock<HashMap<String, (Instant, DiscoveryResponse)>>>,
+    /// Cached screener results per sector slug. Same pattern as discovery_cache.
+    pub screener_cache: Arc<RwLock<HashMap<String, (Instant, SectorScreenerResponse)>>>,
 }
 
 impl AppState {
@@ -90,6 +99,8 @@ impl AppState {
             resend_api_key,
             email_from: Arc::from(email_from.as_str()),
             app_url: Arc::from(app_url.as_str()),
+            discovery_cache: Arc::new(RwLock::new(HashMap::new())),
+            screener_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -143,6 +154,8 @@ impl AppState {
             resend_api_key: None,
             email_from: Arc::from("onboarding@resend.dev"),
             app_url: Arc::from("http://localhost:1420"),
+            discovery_cache: Arc::new(RwLock::new(HashMap::new())),
+            screener_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -172,6 +185,8 @@ impl AppState {
             resend_api_key: None,
             email_from: Arc::from("onboarding@resend.dev"),
             app_url: Arc::from("http://localhost:1420"),
+            discovery_cache: Arc::new(RwLock::new(HashMap::new())),
+            screener_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
