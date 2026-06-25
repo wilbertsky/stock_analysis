@@ -25,7 +25,8 @@ const LARGE_CAP_FLOOR: u64 = 10_000_000_000;
 
 /// Candidates fetched per sector. `screener.rs::top_by_market_cap` further trims this
 /// down to `SCORE_TOP_N` (20), so this just needs to be comfortably larger than that.
-const FETCH_LIMIT_PER_SECTOR: u32 = 50;
+/// Set to 100 — the maximum the FMP Starter plan returns per screener call.
+const FETCH_LIMIT_PER_SECTOR: u32 = 100;
 
 /// Large-cap constituent list indexed by sector slug, sourced from FMP company-screener.
 pub struct Sp500 {

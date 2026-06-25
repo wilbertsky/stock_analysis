@@ -30,9 +30,8 @@ use crate::{
     auth::middleware::AuthUser,
     calculations,
     error::AppError,
-    fmp::ScreenerCandidate,
+    fmp::{FmpClient, ScreenerCandidate},
     models::{DiscoveryEntry, DiscoveryResponse, FundamentalsYear},
-    providers::Providers,
     routes::screener::DISCLAIMER,
     sectors,
     state::AppState,
@@ -55,10 +54,9 @@ const SMALL_MID_CAP_CEILING: u64 = 5_000_000_000;
 /// coverage across the whole band, which is the entire point of this screener.
 const MARKET_CAP_BUCKETS: u64 = 8;
 
-/// Candidates fetched from FMP per bucket. 8 buckets × 6 ≈ 48 candidates total, each
-/// triggering several downstream fundamentals calls — deliberately smaller than the
-/// sector screener's per-sector fetch to keep response time in a similar 15–30s ballpark.
-const PER_BUCKET_LIMIT: u32 = 6;
+/// Candidates fetched from FMP per bucket. 8 buckets × 30 ≈ 240 candidates total.
+/// FMP-only fundamentals calls keep response time within ~5s even at this budget.
+const PER_BUCKET_LIMIT: u32 = 30;
 
 #[derive(Debug, Deserialize)]
 pub struct DiscoveryQuery {
@@ -157,17 +155,17 @@ pub async fn get_discovery(
 
     // Same provider chain (EDGAR/Yahoo primary, server-level FMP fallback) used
     // everywhere else in this app for per-ticker fundamentals.
-    let providers = Arc::new(state.providers.with_fmp(state.fmp.clone()));
+    let fmp = state.fmp.clone();
 
     let sem = Arc::new(tokio::sync::Semaphore::new(5));
     let mut set = JoinSet::new();
 
     for candidate in candidates {
-        let providers = providers.clone();
+        let fmp = fmp.clone();
         let sem = sem.clone();
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            score_candidate(&providers, &candidate).await
+            score_candidate(&fmp, &candidate).await
         });
     }
 
@@ -202,7 +200,7 @@ pub async fn get_discovery(
 /// small/mid-cap universe where data completeness varies more than it does for
 /// large caps.
 async fn score_candidate(
-    providers: &Providers,
+    fmp: &FmpClient,
     candidate: &ScreenerCandidate,
 ) -> Option<DiscoveryEntry> {
     let ticker = candidate.symbol.as_str();
@@ -213,11 +211,11 @@ async fn score_candidate(
     }
 
     let (income_r, balance_r, cashflow_r, ratios_r, km_r) = tokio::join!(
-        providers.income_statements(ticker, 5),
-        providers.balance_sheets(ticker, 2),
-        providers.cash_flow_statements(ticker, 2),
-        providers.ratios(ticker, 5),
-        providers.key_metrics(ticker, 5),
+        fmp.income_statements(ticker, 5),
+        fmp.balance_sheets(ticker, 2),
+        fmp.cash_flow_statements(ticker, 2),
+        fmp.ratios(ticker, 5),
+        fmp.key_metrics(ticker, 5),
     );
 
     let income = match income_r {
