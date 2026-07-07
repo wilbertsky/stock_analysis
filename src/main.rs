@@ -150,6 +150,8 @@ impl Modify for BearerAuth {
         UpdatePortfolioRequest,
         RealizedGainRow,
         RealizedGainsSummary,
+        routes::chat::ChatHistoryItem,
+        routes::chat::ChatRequest,
         error::ErrorBody,
     )),
     tags(

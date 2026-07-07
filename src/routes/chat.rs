@@ -1,16 +1,20 @@
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use crate::{auth::middleware::AuthUser, error::AppError, state::AppState};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct ChatHistoryItem {
+    /// "user" or "assistant"
     pub role: String,
     pub content: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ChatRequest {
+    /// The question to ask (3–500 characters).
     pub question: String,
+    /// Prior conversation turns, oldest first (max 12).
     #[serde(default)]
     pub history: Vec<ChatHistoryItem>,
 }
@@ -19,7 +23,7 @@ pub struct ChatRequest {
     post,
     path = "/api/chat",
     tag = "chat",
-    request_body = serde_json::Value,
+    request_body = ChatRequest,
     responses(
         (status = 200, description = "Answer from the RAG assistant"),
         (status = 400, description = "Bad request", body = crate::error::ErrorBody),
