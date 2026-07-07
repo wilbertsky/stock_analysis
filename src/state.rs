@@ -41,6 +41,9 @@ pub struct AppState {
     pub discovery_cache: Arc<RwLock<HashMap<String, (Instant, DiscoveryResponse)>>>,
     /// Cached screener results per sector slug. Same pattern as discovery_cache.
     pub screener_cache: Arc<RwLock<HashMap<String, (Instant, SectorScreenerResponse)>>>,
+    /// Base URL of the RAG app (RAG_URL env var). None when not configured — chat endpoint
+    /// returns 503 rather than panicking so the rest of the API stays healthy.
+    pub rag_url: Option<Arc<str>>,
 }
 
 impl AppState {
@@ -76,6 +79,16 @@ impl AppState {
         let providers = Arc::new(Providers::new(edgar, yahoo));
         let sp500 = Arc::new(Sp500::load(&fmp).await);
 
+        let rag_url = std::env::var("RAG_URL").ok()
+            .filter(|u| !u.is_empty())
+            .map(|u| {
+                tracing::info!("RAG service configured at {u}");
+                Arc::from(u.as_str())
+            });
+        if rag_url.is_none() {
+            tracing::warn!("RAG_URL not set — /api/chat proxy disabled");
+        }
+
         let resend_api_key = std::env::var("RESEND_API_KEY").ok()
             .filter(|k| !k.is_empty())
             .map(|k| { tracing::info!("Resend email configured"); Arc::from(k.as_str()) });
@@ -101,6 +114,7 @@ impl AppState {
             app_url: Arc::from(app_url.as_str()),
             discovery_cache: Arc::new(RwLock::new(HashMap::new())),
             screener_cache: Arc::new(RwLock::new(HashMap::new())),
+            rag_url,
         }
     }
 
@@ -156,6 +170,7 @@ impl AppState {
             app_url: Arc::from("http://localhost:1420"),
             discovery_cache: Arc::new(RwLock::new(HashMap::new())),
             screener_cache: Arc::new(RwLock::new(HashMap::new())),
+            rag_url: None,
         }
     }
 
@@ -187,6 +202,7 @@ impl AppState {
             app_url: Arc::from("http://localhost:1420"),
             discovery_cache: Arc::new(RwLock::new(HashMap::new())),
             screener_cache: Arc::new(RwLock::new(HashMap::new())),
+            rag_url: None,
         }
     }
 }
