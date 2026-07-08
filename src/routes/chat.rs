@@ -1,7 +1,11 @@
+use std::time::Duration;
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use crate::{auth::middleware::AuthUser, error::AppError, state::AppState};
+
+// The RAG orchestrator chains multiple Claude API calls — give it enough runway.
+const RAG_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct ChatHistoryItem {
@@ -51,6 +55,7 @@ pub async fn post_chat(
     let mut req = state
         .http_client
         .post(format!("{rag_url}/api/chat"))
+        .timeout(RAG_TIMEOUT)
         .header("Content-Type", "application/ld+json");
 
     if let Some(secret) = &state.rag_secret {
