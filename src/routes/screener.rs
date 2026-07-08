@@ -135,10 +135,17 @@ pub async fn get_sector_top_picks(
 /// Core screener logic — separated from the HTTP handler so the background refresh
 /// task can call it directly without going through HTTP.
 pub async fn run_screener(state: &AppState, sector: &str) -> Result<SectorScreenerResponse, AppError> {
+    // When sp500 is loaded but a specific sector is missing (e.g. FMP rate-limited that
+    // sector during boot), fall back to the hardcoded list rather than returning an error.
     let candidate_tickers: Vec<String> = if state.sp500.is_loaded() {
         state
             .sp500
             .tickers_for_sector(sector)
+            .map(|s| s.to_vec())
+            .or_else(|| {
+                sectors::tickers_for_sector(sector)
+                    .map(|s| s.iter().map(|t| t.to_string()).collect())
+            })
             .ok_or_else(|| {
                 AppError::Unprocessable(format!(
                     "Unknown sector '{}'. Supported: {}",
@@ -146,7 +153,6 @@ pub async fn run_screener(state: &AppState, sector: &str) -> Result<SectorScreen
                     sectors::SUPPORTED_SECTORS
                 ))
             })?
-            .to_vec()
     } else {
         sectors::tickers_for_sector(sector)
             .ok_or_else(|| {
