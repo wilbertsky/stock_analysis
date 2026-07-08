@@ -48,10 +48,16 @@ pub async fn post_chat(
     let bytes = serde_json::to_vec(&forward)
         .map_err(|e| AppError::Internal(format!("serialize error: {e}")))?;
 
-    let res = state
+    let mut req = state
         .http_client
         .post(format!("{rag_url}/api/chat"))
-        .header("Content-Type", "application/ld+json")
+        .header("Content-Type", "application/ld+json");
+
+    if let Some(secret) = &state.rag_secret {
+        req = req.header("X-Rag-Secret", secret.as_ref());
+    }
+
+    let res = req
         .body(bytes)
         .send()
         .await

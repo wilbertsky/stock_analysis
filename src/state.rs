@@ -42,8 +42,11 @@ pub struct AppState {
     /// Cached screener results per sector slug. Same pattern as discovery_cache.
     pub screener_cache: Arc<RwLock<HashMap<String, (Instant, SectorScreenerResponse)>>>,
     /// Base URL of the RAG app (RAG_URL env var). None when not configured — chat endpoint
-    /// returns 503 rather than panicking so the rest of the API stays healthy.
+    /// returns 500 rather than panicking so the rest of the API stays healthy.
     pub rag_url: Option<Arc<str>>,
+    /// Shared secret sent as X-Rag-Secret on every request to the RAG app.
+    /// None when RAG_SECRET env var is not set (local dev without the guard).
+    pub rag_secret: Option<Arc<str>>,
 }
 
 impl AppState {
@@ -89,6 +92,10 @@ impl AppState {
             tracing::warn!("RAG_URL not set — /api/chat proxy disabled");
         }
 
+        let rag_secret = std::env::var("RAG_SECRET").ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| Arc::from(s.as_str()));
+
         let resend_api_key = std::env::var("RESEND_API_KEY").ok()
             .filter(|k| !k.is_empty())
             .map(|k| { tracing::info!("Resend email configured"); Arc::from(k.as_str()) });
@@ -115,6 +122,7 @@ impl AppState {
             discovery_cache: Arc::new(RwLock::new(HashMap::new())),
             screener_cache: Arc::new(RwLock::new(HashMap::new())),
             rag_url,
+            rag_secret,
         }
     }
 
@@ -171,6 +179,7 @@ impl AppState {
             discovery_cache: Arc::new(RwLock::new(HashMap::new())),
             screener_cache: Arc::new(RwLock::new(HashMap::new())),
             rag_url: None,
+            rag_secret: None,
         }
     }
 
@@ -203,6 +212,7 @@ impl AppState {
             discovery_cache: Arc::new(RwLock::new(HashMap::new())),
             screener_cache: Arc::new(RwLock::new(HashMap::new())),
             rag_url: None,
+            rag_secret: None,
         }
     }
 }
