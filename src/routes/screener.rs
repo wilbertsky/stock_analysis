@@ -128,6 +128,7 @@ pub async fn get_sector_top_picks(
     }
 
     let response = run_screener(&state, &sector).await?;
+    crate::cache::persist_screener(&state.db, &sector, &response).await;
     state.screener_cache.write().await.insert(sector, (Instant::now(), response.clone()));
     Ok(Json(response))
 }

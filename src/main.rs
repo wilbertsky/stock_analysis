@@ -1,4 +1,5 @@
 mod auth;
+mod cache;
 mod calculations;
 mod crypto;
 mod edgar;
@@ -190,6 +191,9 @@ async fn main() {
         .await
         .expect("Database migration failed");
 
+    // Populate in-memory caches from DB so requests are served instantly after a redeploy.
+    cache::load_from_db(&state.db, &state.discovery_cache, &state.screener_cache).await;
+
     // Background cache refresh — populates discovery and screener caches for all sectors
     // on a 12h cycle so requests are served instantly from cache rather than hammering FMP
     // on every click. Discovery uses 60s inter-sector delays (FMP rate-limit headroom);
@@ -211,6 +215,7 @@ async fn main() {
                     if let Some(fmp_sector) = sectors::slug_to_fmp_sector(slug) {
                         match routes::discovery::run_discovery(&state.fmp, slug, fmp_sector).await {
                             Ok(response) => {
+                                cache::persist_discovery(&state.db, slug, &response).await;
                                 state.discovery_cache.write().await.insert(
                                     slug.to_owned(),
                                     (std::time::Instant::now(), response),
@@ -226,6 +231,7 @@ async fn main() {
                 for &slug in sectors::ALL_SECTOR_SLUGS {
                     match routes::screener::run_screener(&state, slug).await {
                         Ok(response) => {
+                            cache::persist_screener(&state.db, slug, &response).await;
                             state.screener_cache.write().await.insert(
                                 slug.to_owned(),
                                 (std::time::Instant::now(), response),

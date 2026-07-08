@@ -128,6 +128,7 @@ pub async fn get_discovery(
     }
 
     let response = run_discovery(&state.fmp, &sector, fmp_sector).await?;
+    crate::cache::persist_discovery(&state.db, &sector, &response).await;
     state.discovery_cache.write().await.insert(sector, (Instant::now(), response.clone()));
     Ok(Json(response))
 }
