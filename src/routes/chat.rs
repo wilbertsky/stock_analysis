@@ -109,8 +109,7 @@ pub async fn get_chat_job(
     let mut req = state
         .http_client
         .get(format!("{rag_url}/api/chat-jobs/{job_id}"))
-        .timeout(Duration::from_secs(10))
-        .header("Accept", "application/json");
+        .timeout(Duration::from_secs(10));
 
     if let Some(secret) = &state.rag_secret {
         req = req.header("X-Rag-Secret", secret.as_ref());
