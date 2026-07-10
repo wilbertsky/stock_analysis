@@ -80,6 +80,7 @@ impl Modify for BearerAuth {
         routes::screener::get_sector_top_picks,
         routes::discovery::get_discovery,
         routes::chat::post_chat,
+        routes::chat::get_chat_job,
         routes::admin::create_invite,
         routes::admin::list_invites,
         routes::auth::register,
@@ -266,6 +267,7 @@ async fn main() {
         .routes(routes!(routes::screener::get_sector_top_picks))
         .routes(routes!(routes::discovery::get_discovery))
         .routes(routes!(routes::chat::post_chat))
+        .routes(routes!(routes::chat::get_chat_job))
         .routes(routes!(routes::admin::create_invite))
         .routes(routes!(routes::admin::list_invites))
         .routes(routes!(routes::auth::register))
