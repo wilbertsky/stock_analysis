@@ -202,9 +202,12 @@ async fn main() {
     {
         let state = state.clone();
         tokio::spawn(async move {
-            // Initial delay: let the boot-time Sp500::load() FMP calls settle before the
-            // background task starts adding more.
-            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            // Brief initial delay: let the boot-time Sp500::load() FMP calls settle
+            // before the background task starts. 15 s is ample — Sp500::load() typically
+            // finishes in under 5 s. The previous 300 s delay left users hitting live
+            // 15–30 s FMP fetches for 5+ minutes after every redeploy when the DB cache
+            // had been cleared.
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
             loop {
                 tracing::info!("Background cache refresh: starting discovery");
                 let mut first = true;
