@@ -214,6 +214,10 @@ pub struct ScreenerEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SectorScreenerResponse {
     pub sector: String,
+    /// Exchange slug this response was screened against (e.g. "us", "lse").
+    pub exchange: String,
+    /// ISO 4217 currency code for prices on this exchange (e.g. "USD", "GBP").
+    pub currency: String,
     /// Name of the scoring model applied (e.g. "Standard", "Financials", "Real Estate")
     pub scoring_model: String,
     /// Human-readable labels for score_a, score_b, score_c, score_d respectively
@@ -271,9 +275,13 @@ pub struct DiscoveryEntry {
 pub struct DiscoveryResponse {
     /// Sector slug this response was screened against.
     pub sector: String,
-    /// Market cap floor used for the candidate universe (USD).
+    /// Exchange slug this response was screened against (e.g. "us", "lse").
+    pub exchange: String,
+    /// ISO 4217 currency code for prices on this exchange (e.g. "USD", "GBP").
+    pub currency: String,
+    /// Market cap floor used for the candidate universe (native currency).
     pub market_cap_floor: f64,
-    /// Market cap ceiling used for the candidate universe (USD).
+    /// Market cap ceiling used for the candidate universe (native currency).
     pub market_cap_ceiling: f64,
     /// Deviation band applied around intrinsic value (percentage, both directions).
     pub deviation_band_pct: f64,

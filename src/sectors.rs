@@ -76,3 +76,41 @@ pub const ALL_SECTOR_SLUGS: &[&str] = &[
     "consumer-discretionary", "industrials", "materials", "real-estate",
     "communication", "utilities",
 ];
+
+/// Supported exchange slugs. "us" is the default (NYSE/NASDAQ via country=US filter).
+/// "lse" maps to FMP's `exchange=LSE` (London Stock Exchange).
+pub const SUPPORTED_EXCHANGES: &str = "us, lse";
+
+/// All exchange slugs for background refresh iteration.
+pub const ALL_EXCHANGE_SLUGS: &[&str] = &["us", "lse"];
+
+/// Returns `true` if the exchange slug is supported.
+pub fn is_valid_exchange(exchange: &str) -> bool {
+    matches!(exchange, "us" | "lse")
+}
+
+/// Returns the ISO 4217 currency code for prices/financials on a given exchange.
+/// US equities are denominated in USD; LSE in GBP.
+pub fn exchange_currency(exchange: &str) -> &'static str {
+    match exchange {
+        "lse" => "GBP",
+        _ => "USD",
+    }
+}
+
+/// Returns the FMP `exchange=` parameter value for non-US exchanges, or `None` for
+/// US (which uses `country=US` instead of an exchange filter).
+pub fn exchange_fmp_code(exchange: &str) -> Option<&'static str> {
+    match exchange {
+        "lse" => Some("LSE"),
+        _ => None,
+    }
+}
+
+/// Human-readable exchange label for display and logging.
+pub fn exchange_label(exchange: &str) -> &'static str {
+    match exchange {
+        "lse" => "London Stock Exchange (LSE)",
+        _ => "US (NYSE/NASDAQ)",
+    }
+}

@@ -68,13 +68,18 @@ pub struct DiscoveryQuery {
     /// non-Option field) so a missing param produces a normal `AppError` JSON response
     /// from the handler instead of falling through to Axum's raw query-rejection format.
     pub sector: Option<String>,
+    /// Exchange slug to screen. Defaults to "us" (NYSE/NASDAQ). Supported: us, lse.
+    pub exchange: Option<String>,
 }
 
 #[utoipa::path(
     get,
     path = "/api/discovery",
     tag = "discovery",
-    params(("sector" = String, Query, description = "Required sector slug, e.g. technology.")),
+    params(
+        ("sector" = String, Query, description = "Required sector slug, e.g. technology."),
+        ("exchange" = Option<String>, Query, description = "Exchange slug: 'us' (default) or 'lse'"),
+    ),
     description = "Screens small/mid-cap stocks (market cap $300M–$5B, sourced from FMP's \
         company screener) for candidates close to their Graham Number with fundamentals \
         that clear a quality floor — not the same as the sector screener's blue-chip-biased \
@@ -117,30 +122,44 @@ pub async fn get_discovery(
             sectors::SUPPORTED_SECTORS
         ))
     })?;
+    let exchange = params.exchange.as_deref().unwrap_or("us").to_lowercase();
+    if !sectors::is_valid_exchange(&exchange) {
+        return Err(AppError::Unprocessable(format!(
+            "Unknown exchange '{}'. Supported: {}",
+            exchange, sectors::SUPPORTED_EXCHANGES
+        )));
+    }
 
+    let cache_key = crate::cache::cache_key(&exchange, &sector);
     {
         let cache = state.discovery_cache.read().await;
-        if let Some((cached_at, response)) = cache.get(&sector) {
+        if let Some((cached_at, response)) = cache.get(&cache_key) {
             if cached_at.elapsed() < CACHE_TTL {
                 return Ok(Json(response.clone()));
             }
         }
     }
 
-    let response = run_discovery(&state.fmp, &sector, fmp_sector).await?;
-    crate::cache::persist_discovery(&state.db, &sector, &response).await;
-    state.discovery_cache.write().await.insert(sector, (Instant::now(), response.clone()));
+    let fmp_exchange = sectors::exchange_fmp_code(&exchange);
+    let response = run_discovery(&state.fmp, &sector, &exchange, fmp_sector, fmp_exchange).await?;
+    crate::cache::persist_discovery(&state.db, &exchange, &sector, &response).await;
+    state.discovery_cache.write().await.insert(cache_key, (Instant::now(), response.clone()));
     Ok(Json(response))
 }
 
 /// Core discovery logic — separated from the HTTP handler so the background refresh
 /// task can call it directly without going through HTTP.
+///
+/// `fmp_exchange`: `None` for US (uses `country=US`), `Some("LSE")` etc. for other exchanges.
 pub async fn run_discovery(
     fmp: &Arc<FmpClient>,
     sector: &str,
+    exchange: &str,
     fmp_sector: &str,
+    fmp_exchange: Option<&str>,
 ) -> Result<DiscoveryResponse, AppError> {
     let fmp_sector = fmp_sector.to_owned();
+    let fmp_exchange = fmp_exchange.map(str::to_owned);
     let bucket_width = (SMALL_MID_CAP_CEILING - SMALL_MID_CAP_FLOOR) / MARKET_CAP_BUCKETS;
     let bucket_sem = Arc::new(tokio::sync::Semaphore::new(3));
     let mut bucket_set = JoinSet::new();
@@ -153,10 +172,11 @@ pub async fn run_discovery(
         };
         let fmp = fmp.clone();
         let fmp_sector = fmp_sector.clone();
+        let fmp_exchange = fmp_exchange.clone();
         let bucket_sem = bucket_sem.clone();
         bucket_set.spawn(async move {
             let _permit = bucket_sem.acquire().await.unwrap();
-            (i, fmp.company_screener(floor, Some(ceiling), Some(&fmp_sector), PER_BUCKET_LIMIT).await)
+            (i, fmp.company_screener(floor, Some(ceiling), Some(&fmp_sector), PER_BUCKET_LIMIT, fmp_exchange.as_deref()).await)
         });
     }
 
@@ -203,6 +223,8 @@ pub async fn run_discovery(
 
     Ok(DiscoveryResponse {
         sector: sector.to_owned(),
+        exchange: exchange.to_owned(),
+        currency: sectors::exchange_currency(exchange).to_owned(),
         market_cap_floor: SMALL_MID_CAP_FLOOR as f64,
         market_cap_ceiling: SMALL_MID_CAP_CEILING as f64,
         deviation_band_pct: calculations::DISCOVERY_DEVIATION_BAND_PCT,

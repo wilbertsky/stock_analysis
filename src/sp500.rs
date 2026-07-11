@@ -52,7 +52,7 @@ impl Sp500 {
             };
 
             match fmp
-                .company_screener(LARGE_CAP_FLOOR, None, Some(fmp_sector), FETCH_LIMIT_PER_SECTOR)
+                .company_screener(LARGE_CAP_FLOOR, None, Some(fmp_sector), FETCH_LIMIT_PER_SECTOR, None)
                 .await
             {
                 Ok(mut candidates) => {

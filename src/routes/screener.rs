@@ -1,9 +1,10 @@
 use std::{collections::HashMap, sync::Arc, time::{Duration, Instant}};
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
+use serde::Deserialize;
 use tokio::task::JoinSet;
 
 use crate::{
@@ -89,11 +90,20 @@ fn sector_model(sector: &str) -> SectorModel {
 
 // ── Route handler ─────────────────────────────────────────────────────────────
 
+#[derive(Debug, Deserialize)]
+pub struct ScreenerQuery {
+    /// Exchange slug to screen. Defaults to "us" (NYSE/NASDAQ). Supported: us, lse.
+    pub exchange: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/api/screener/{sector}",
     tag = "screener",
-    params(("sector" = String, Path, description = "Sector name, e.g. technology, healthcare, financials")),
+    params(
+        ("sector" = String, Path, description = "Sector name, e.g. technology, healthcare, financials"),
+        ("exchange" = Option<String>, Query, description = "Exchange slug: 'us' (default) or 'lse'"),
+    ),
     description = "Screens large-cap stocks (market cap ≥ $10B, sourced from FMP's company \
         screener) within a sector and ranks them by a weighted composite score. \
         The scoring model adapts to the sector: \
@@ -117,55 +127,90 @@ pub async fn get_sector_top_picks(
     State(state): State<AppState>,
     _auth: AuthUser,
     Path(sector): Path<String>,
+    Query(params): Query<ScreenerQuery>,
 ) -> Result<Json<SectorScreenerResponse>, AppError> {
+    let exchange = params.exchange.as_deref().unwrap_or("us").to_lowercase();
+    if !sectors::is_valid_exchange(&exchange) {
+        return Err(AppError::Unprocessable(format!(
+            "Unknown exchange '{}'. Supported: {}",
+            exchange, sectors::SUPPORTED_EXCHANGES
+        )));
+    }
+
+    let cache_key = crate::cache::cache_key(&exchange, &sector);
     {
         let cache = state.screener_cache.read().await;
-        if let Some((cached_at, response)) = cache.get(&sector) {
+        if let Some((cached_at, response)) = cache.get(&cache_key) {
             if cached_at.elapsed() < CACHE_TTL {
                 return Ok(Json(response.clone()));
             }
         }
     }
 
-    let response = run_screener(&state, &sector).await?;
-    crate::cache::persist_screener(&state.db, &sector, &response).await;
-    state.screener_cache.write().await.insert(sector, (Instant::now(), response.clone()));
+    let response = run_screener(&state, &sector, &exchange).await?;
+    crate::cache::persist_screener(&state.db, &exchange, &sector, &response).await;
+    state.screener_cache.write().await.insert(cache_key, (Instant::now(), response.clone()));
     Ok(Json(response))
 }
 
+/// Large-cap floor used when fetching LSE candidates from FMP.
+/// FMP normalises market caps to USD, so the same $10B threshold applies.
+const LSE_LARGE_CAP_FLOOR: u64 = 5_000_000_000;
+
 /// Core screener logic — separated from the HTTP handler so the background refresh
 /// task can call it directly without going through HTTP.
-pub async fn run_screener(state: &AppState, sector: &str) -> Result<SectorScreenerResponse, AppError> {
-    // When sp500 is loaded but a specific sector is missing (e.g. FMP rate-limited that
-    // sector during boot), fall back to the hardcoded list rather than returning an error.
-    let candidate_tickers: Vec<String> = if state.sp500.is_loaded() {
-        state
-            .sp500
-            .tickers_for_sector(sector)
-            .map(|s| s.to_vec())
-            .or_else(|| {
-                sectors::tickers_for_sector(sector)
-                    .map(|s| s.iter().map(|t| t.to_string()).collect())
-            })
-            .ok_or_else(|| {
-                AppError::Unprocessable(format!(
-                    "Unknown sector '{}'. Supported: {}",
-                    sector,
-                    sectors::SUPPORTED_SECTORS
-                ))
-            })?
+pub async fn run_screener(state: &AppState, sector: &str, exchange: &str) -> Result<SectorScreenerResponse, AppError> {
+    let candidate_tickers: Vec<String> = if exchange == "us" {
+        // US: use the pre-loaded Sp500 large-cap universe (falls back to hardcoded list
+        // if FMP rate-limited a sector during boot).
+        if state.sp500.is_loaded() {
+            state
+                .sp500
+                .tickers_for_sector(sector)
+                .map(|s| s.to_vec())
+                .or_else(|| {
+                    sectors::tickers_for_sector(sector)
+                        .map(|s| s.iter().map(|t| t.to_string()).collect())
+                })
+                .ok_or_else(|| {
+                    AppError::Unprocessable(format!(
+                        "Unknown sector '{}'. Supported: {}",
+                        sector,
+                        sectors::SUPPORTED_SECTORS
+                    ))
+                })?
+        } else {
+            sectors::tickers_for_sector(sector)
+                .ok_or_else(|| {
+                    AppError::Unprocessable(format!(
+                        "Unknown sector '{}'. Supported: {}",
+                        sector,
+                        sectors::SUPPORTED_SECTORS
+                    ))
+                })?
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        }
     } else {
-        sectors::tickers_for_sector(sector)
-            .ok_or_else(|| {
-                AppError::Unprocessable(format!(
-                    "Unknown sector '{}'. Supported: {}",
-                    sector,
-                    sectors::SUPPORTED_SECTORS
-                ))
-            })?
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+        // Non-US exchange: fetch large-cap candidates from FMP filtered by exchange and sector.
+        let fmp_sector = sectors::slug_to_fmp_sector(sector).ok_or_else(|| {
+            AppError::Unprocessable(format!(
+                "Unknown sector '{}'. Supported: {}",
+                sector,
+                sectors::SUPPORTED_SECTORS
+            ))
+        })?;
+        let fmp_exchange = sectors::exchange_fmp_code(exchange);
+        let candidates = state
+            .fmp
+            .company_screener(LSE_LARGE_CAP_FLOOR, None, Some(fmp_sector), 100, fmp_exchange)
+            .await
+            .unwrap_or_default();
+        if candidates.is_empty() {
+            tracing::warn!(sector, exchange, "No large-cap candidates from FMP for exchange");
+        }
+        candidates.into_iter().map(|c| c.symbol).collect()
     };
 
     let model = sector_model(sector);
@@ -204,6 +249,8 @@ pub async fn run_screener(state: &AppState, sector: &str) -> Result<SectorScreen
     let stocks_analyzed = results.len();
     Ok(SectorScreenerResponse {
         sector: sector.to_owned(),
+        exchange: exchange.to_owned(),
+        currency: sectors::exchange_currency(exchange).to_owned(),
         scoring_model: model.name().to_owned(),
         score_labels: model.labels(),
         score_weights: model.weights(),

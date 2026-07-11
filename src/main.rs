@@ -209,40 +209,53 @@ async fn main() {
             // had been cleared.
             tokio::time::sleep(std::time::Duration::from_secs(15)).await;
             loop {
-                tracing::info!("Background cache refresh: starting discovery");
-                let mut first = true;
-                for &slug in sectors::ALL_SECTOR_SLUGS {
-                    if !first {
-                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                    }
-                    first = false;
-                    if let Some(fmp_sector) = sectors::slug_to_fmp_sector(slug) {
-                        match routes::discovery::run_discovery(&state.fmp, slug, fmp_sector).await {
-                            Ok(response) => {
-                                cache::persist_discovery(&state.db, slug, &response).await;
-                                state.discovery_cache.write().await.insert(
-                                    slug.to_owned(),
-                                    (std::time::Instant::now(), response),
-                                );
-                                tracing::info!(sector = slug, "Discovery cache refreshed");
+                // Discovery: 60s inter-sector delay per exchange for FMP rate-limit headroom.
+                for &exchange in sectors::ALL_EXCHANGE_SLUGS {
+                    tracing::info!(exchange, "Background cache refresh: starting discovery");
+                    let fmp_exchange = sectors::exchange_fmp_code(exchange);
+                    let mut first = true;
+                    for &slug in sectors::ALL_SECTOR_SLUGS {
+                        if !first {
+                            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        }
+                        first = false;
+                        if let Some(fmp_sector) = sectors::slug_to_fmp_sector(slug) {
+                            match routes::discovery::run_discovery(&state.fmp, slug, exchange, fmp_sector, fmp_exchange).await {
+                                Ok(response) => {
+                                    cache::persist_discovery(&state.db, exchange, slug, &response).await;
+                                    let key = cache::cache_key(exchange, slug);
+                                    state.discovery_cache.write().await.insert(
+                                        key,
+                                        (std::time::Instant::now(), response),
+                                    );
+                                    tracing::info!(exchange, sector = slug, "Discovery cache refreshed");
+                                }
+                                Err(e) => tracing::warn!(exchange, sector = slug, "Discovery cache refresh failed: {e}"),
                             }
-                            Err(e) => tracing::warn!(sector = slug, "Discovery cache refresh failed: {e}"),
                         }
                     }
                 }
 
-                tracing::info!("Background cache refresh: starting screener");
-                for &slug in sectors::ALL_SECTOR_SLUGS {
-                    match routes::screener::run_screener(&state, slug).await {
-                        Ok(response) => {
-                            cache::persist_screener(&state.db, slug, &response).await;
-                            state.screener_cache.write().await.insert(
-                                slug.to_owned(),
-                                (std::time::Instant::now(), response),
-                            );
-                            tracing::info!(sector = slug, "Screener cache refreshed");
+                // Screener: no inter-sector delay for US (EDGAR/Yahoo primary, low FMP usage).
+                // LSE is all-FMP so we add a short delay between sectors.
+                for &exchange in sectors::ALL_EXCHANGE_SLUGS {
+                    tracing::info!(exchange, "Background cache refresh: starting screener");
+                    for (i, &slug) in sectors::ALL_SECTOR_SLUGS.iter().enumerate() {
+                        if exchange != "us" && i > 0 {
+                            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                         }
-                        Err(e) => tracing::warn!(sector = slug, "Screener cache refresh failed: {e}"),
+                        match routes::screener::run_screener(&state, slug, exchange).await {
+                            Ok(response) => {
+                                cache::persist_screener(&state.db, exchange, slug, &response).await;
+                                let key = cache::cache_key(exchange, slug);
+                                state.screener_cache.write().await.insert(
+                                    key,
+                                    (std::time::Instant::now(), response),
+                                );
+                                tracing::info!(exchange, sector = slug, "Screener cache refreshed");
+                            }
+                            Err(e) => tracing::warn!(exchange, sector = slug, "Screener cache refresh failed: {e}"),
+                        }
                     }
                 }
 

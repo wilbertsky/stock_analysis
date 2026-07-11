@@ -127,24 +127,27 @@ impl FmpClient {
     /// (sp500.rs) and the small/mid-cap discovery universe (routes/discovery.rs) —
     /// FMP's own screener replaces the dead GitHub-hosted S&P 500/Nasdaq 100 constituent
     /// feeds and reaches well beyond index membership.
-    ///
-    /// Always scoped to `country=US` and `isActivelyTrading=true`; ETFs and funds are
-    /// filtered out client-side since filtering them server-side via query params is
-    /// unverified against the current plan.
+    /// `exchange`: when `None`, scopes to `country=US`. When `Some("LSE")` (or any
+    /// other FMP exchange code), uses `exchange=<code>` instead — no country filter.
+    /// ETFs and funds are filtered out client-side.
     pub async fn company_screener(
         &self,
         market_cap_more_than: u64,
         market_cap_lower_than: Option<u64>,
         sector: Option<&str>,
         limit: u32,
+        exchange: Option<&str>,
     ) -> Result<Vec<ScreenerCandidate>, AppError> {
         let mut query: Vec<(&str, String)> = vec![
             ("marketCapMoreThan", market_cap_more_than.to_string()),
-            ("country", "US".to_owned()),
             ("isActivelyTrading", "true".to_owned()),
             ("limit", limit.to_string()),
             ("apikey", self.api_key.clone()),
         ];
+        match exchange {
+            Some(ex) => query.push(("exchange", ex.to_owned())),
+            None => query.push(("country", "US".to_owned())),
+        }
         if let Some(cap) = market_cap_lower_than {
             query.push(("marketCapLowerThan", cap.to_string()));
         }
