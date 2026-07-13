@@ -3,6 +3,7 @@ pub mod auth;
 pub mod chat;
 pub mod discovery;
 pub mod feedback;
+pub mod market;
 pub mod portfolio;
 pub mod screener;
 pub mod stock;

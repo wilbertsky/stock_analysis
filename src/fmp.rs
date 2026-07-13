@@ -232,6 +232,70 @@ impl FmpClient {
             .ok_or(AppError::NotFound)
     }
 
+    /// Full quote for a single ticker — price, day change, and change percent.
+    pub async fn quote_full(&self, ticker: &str) -> Result<MarketQuoteFmp, AppError> {
+        let url = format!("{}/quote", self.base_url);
+        let list: Vec<MarketQuoteFmp> = self
+            .client
+            .get(&url)
+            .query(&[("symbol", ticker), ("apikey", &self.api_key)])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        list.into_iter().next().ok_or(AppError::NotFound)
+    }
+
+    /// Returns price + day-change data for a batch of tickers in one FMP call.
+    /// URL is built manually so the comma-joined symbol list is not percent-encoded
+    /// (reqwest would turn commas into %2C, which FMP does not accept for batch quotes).
+    pub async fn batch_quotes(&self, symbols: &[&str]) -> Result<Vec<MarketQuoteFmp>, AppError> {
+        let url = format!(
+            "{}/quote?symbol={}&apikey={}",
+            self.base_url,
+            symbols.join(","),
+            self.api_key,
+        );
+        let list: Vec<MarketQuoteFmp> = self
+            .client
+            .get(&url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(list)
+    }
+
+    /// Fetches daily closing prices for charting — up to `limit` days, newest-first.
+    /// Unlike `historical_prices`, this does NOT inject `period=annual` (that param is
+    /// for financial statement endpoints and can confuse the EOD price endpoint).
+    pub async fn price_history_for_chart(
+        &self,
+        ticker: &str,
+        limit: u32,
+    ) -> Result<Vec<HistoricalPrice>, AppError> {
+        let url = format!("{}/historical-price-eod/light", self.base_url);
+        let list: Vec<HistoricalPrice> = self
+            .client
+            .get(&url)
+            .query(&[
+                ("symbol", ticker),
+                ("limit", &limit.to_string()),
+                ("apikey", &self.api_key),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        if list.is_empty() {
+            return Err(AppError::NotFound);
+        }
+        Ok(list)
+    }
+
     async fn fetch_list_or_empty<T>(&self, url: &str, ticker: &str, limit: u32) -> Result<Vec<T>, AppError>
     where
         T: serde::de::DeserializeOwned,
@@ -298,6 +362,16 @@ pub struct KeyMetrics {
     pub date: String,
     #[serde(default)] pub return_on_invested_capital: Option<f64>,
     #[serde(default)] pub return_on_equity: Option<f64>,
+}
+
+/// From /stable/quote — full quote with day change. Used for batch market snapshot.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketQuoteFmp {
+    pub symbol: String,
+    #[serde(default)] pub price: Option<f64>,
+    #[serde(default)] pub changes_percentage: Option<f64>,
+    #[serde(default)] pub change: Option<f64>,
 }
 
 /// From /stable/historical-price-eod/light — daily closing prices, newest-first.
