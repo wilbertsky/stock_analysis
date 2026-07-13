@@ -623,3 +623,33 @@ pub async fn get_company_news(
         .collect();
     Ok(Json(CompanyNewsResponse { ticker: ticker.to_uppercase(), items }))
 }
+
+// ── GET /api/stock/{ticker}/price-history ─────────────────────────────────────
+
+#[utoipa::path(
+    get,
+    path = "/api/stock/{ticker}/price-history",
+    tag = "stock",
+    params(("ticker" = String, Path, description = "Ticker symbol")),
+    description = "Up to 10 years of daily closing prices (≈ 2 600 trading days), \
+        sorted oldest → newest. Suitable for rendering a long-term price chart.",
+    responses(
+        (status = 200, description = "Daily price history", body = PriceHistoryResponse),
+        (status = 404, description = "Not found"),
+    )
+)]
+pub async fn get_price_history(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Path(ticker): Path<String>,
+) -> Result<Json<PriceHistoryResponse>, AppError> {
+    let ticker = ticker.to_uppercase();
+    let raw = state.fmp.price_history_for_chart(&ticker, 2600).await?;
+    let mut points: Vec<PricePoint> = raw
+        .into_iter()
+        .filter_map(|p| p.price.map(|price| PricePoint { date: p.date, price }))
+        .collect();
+    // FMP returns newest-first; reverse for chronological order.
+    points.reverse();
+    Ok(Json(PriceHistoryResponse { ticker, points }))
+}

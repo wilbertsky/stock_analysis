@@ -7,7 +7,7 @@ use sqlx::PgPool;
 use tokio::sync::RwLock;
 use crate::edgar::EdgarClient;
 use crate::fmp::FmpClient;
-use crate::models::{DiscoveryResponse, SectorScreenerResponse};
+use crate::models::{DiscoveryResponse, MarketQuote, SectorScreenerResponse};
 use crate::providers::Providers;
 use crate::sp500::Sp500;
 use crate::yahoo::YahooClient;
@@ -41,6 +41,9 @@ pub struct AppState {
     pub discovery_cache: Arc<RwLock<HashMap<String, (Instant, DiscoveryResponse)>>>,
     /// Cached screener results per sector slug. Same pattern as discovery_cache.
     pub screener_cache: Arc<RwLock<HashMap<String, (Instant, SectorScreenerResponse)>>>,
+    /// Market snapshot (SPY, QQQ, sector ETFs). Cached for 10 minutes — fresh enough
+    /// for a dashboard overview without hammering FMP on every page load.
+    pub market_snapshot_cache: Arc<RwLock<Option<(Instant, Vec<MarketQuote>)>>>,
     /// Base URL of the RAG app (RAG_URL env var). None when not configured — chat endpoint
     /// returns 500 rather than panicking so the rest of the API stays healthy.
     pub rag_url: Option<Arc<str>>,
@@ -121,6 +124,7 @@ impl AppState {
             app_url: Arc::from(app_url.as_str()),
             discovery_cache: Arc::new(RwLock::new(HashMap::new())),
             screener_cache: Arc::new(RwLock::new(HashMap::new())),
+            market_snapshot_cache: Arc::new(RwLock::new(None)),
             rag_url,
             rag_secret,
         }
@@ -178,6 +182,7 @@ impl AppState {
             app_url: Arc::from("http://localhost:1420"),
             discovery_cache: Arc::new(RwLock::new(HashMap::new())),
             screener_cache: Arc::new(RwLock::new(HashMap::new())),
+            market_snapshot_cache: Arc::new(RwLock::new(None)),
             rag_url: None,
             rag_secret: None,
         }
@@ -211,6 +216,7 @@ impl AppState {
             app_url: Arc::from("http://localhost:1420"),
             discovery_cache: Arc::new(RwLock::new(HashMap::new())),
             screener_cache: Arc::new(RwLock::new(HashMap::new())),
+            market_snapshot_cache: Arc::new(RwLock::new(None)),
             rag_url: None,
             rag_secret: None,
         }

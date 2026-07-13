@@ -300,6 +300,40 @@ pub struct StockSearchResponse {
     pub results: Vec<StockSearchResult>,
 }
 
+// ── Market snapshot ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Clone, ToSchema)]
+pub struct MarketQuote {
+    pub symbol: String,
+    /// Human-readable label (e.g. "S&P 500", "Technology").
+    pub name: String,
+    pub price: f64,
+    /// Day change in percent (e.g. 1.23 = +1.23%).
+    pub change_pct: f64,
+    /// Day change in dollars.
+    pub change: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MarketSnapshotResponse {
+    pub quotes: Vec<MarketQuote>,
+}
+
+// ── Price history ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PricePoint {
+    pub date: String,
+    pub price: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PriceHistoryResponse {
+    pub ticker: String,
+    /// Daily closing prices, sorted oldest → newest.
+    pub points: Vec<PricePoint>,
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, ToSchema)]

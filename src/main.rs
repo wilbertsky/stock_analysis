@@ -77,6 +77,8 @@ impl Modify for BearerAuth {
         routes::stock::search_stocks,
         routes::stock::get_company_profile,
         routes::stock::get_company_news,
+        routes::stock::get_price_history,
+        routes::market::get_market_snapshot,
         routes::screener::get_sector_top_picks,
         routes::discovery::get_discovery,
         routes::chat::post_chat,
@@ -123,6 +125,10 @@ impl Modify for BearerAuth {
         SectorScreenerResponse,
         DiscoveryEntry,
         DiscoveryResponse,
+        MarketQuote,
+        MarketSnapshotResponse,
+        PricePoint,
+        PriceHistoryResponse,
         StockSearchResult,
         StockSearchResponse,
         CompanyProfileResponse,
@@ -161,6 +167,7 @@ impl Modify for BearerAuth {
         (name = "health", description = "Service health"),
         (name = "feedback", description = "User feedback"),
         (name = "stock", description = "Stock valuation and analysis"),
+        (name = "market", description = "Market-wide snapshot — broad indices and sector ETFs"),
         (name = "screener", description = "Sector screener"),
         (name = "discovery", description = "Small/mid-cap near-miss value discovery screener"),
         (name = "chat", description = "AI chat proxy — forwards authenticated requests to the RAG service"),
@@ -267,6 +274,8 @@ async fn main() {
         .routes(routes!(routes::stock::search_stocks))
         .routes(routes!(routes::stock::get_company_profile))
         .routes(routes!(routes::stock::get_company_news))
+        .routes(routes!(routes::stock::get_price_history))
+        .routes(routes!(routes::market::get_market_snapshot))
         .routes(routes!(routes::screener::get_sector_top_picks))
         .routes(routes!(routes::discovery::get_discovery))
         .routes(routes!(routes::chat::post_chat))
