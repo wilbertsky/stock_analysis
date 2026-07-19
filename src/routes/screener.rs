@@ -106,6 +106,11 @@ fn sector_model(sector: &str) -> SectorModel {
         Supported sectors: technology, healthcare, financials, energy, consumer-staples, \
         consumer-discretionary, industrials, materials, real-estate, communication, utilities. \
         Stocks are pre-filtered to the top market-cap names, then scored. \
+        All sub-scores (DCF, Piotroski, Momentum, and sector-specific factors) are normalized \
+        0–100 relative to peers in the current run — they indicate relative strength within the \
+        result set, not whether the stock clears any absolute quality threshold. \
+        For absolute evaluation (price vs. intrinsic value, raw Piotroski signals, Graham Number), \
+        use the per-ticker analysis endpoints. \
         Expect this endpoint to take 15–30 seconds. A disclaimer field is included in every response.",
     responses(
         (status = 200, description = "Ranked stock picks for the sector", body = SectorScreenerResponse),
