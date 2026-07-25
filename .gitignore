@@ -1,2 +1,9 @@
 /target
 .env
+
+# harness-kit — lifecycle scaffold (local only, not committed)
+.harness/
+.claude/
+docs/features/
+evals/
+CLAUDE.md
