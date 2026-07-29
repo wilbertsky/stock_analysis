@@ -317,18 +317,17 @@ impl Providers {
         ticker: &str,
         date: chrono::NaiveDate,
     ) -> Result<f64, AppError> {
-        // Yahoo has decades of daily history; no FMP fallback needed.
+        if let Some(fmp) = &self.fmp {
+            if let Ok(p) = fmp.price_on_date(ticker, date).await { return Ok(p); }
+        }
         self.yahoo.price_on_date(ticker, date).await
     }
 
     pub async fn quote_price(&self, ticker: &str) -> Result<f64, AppError> {
-        match self.yahoo.quote_price(ticker).await {
-            Ok(p) => Ok(p),
-            Err(e) => match &self.fmp {
-                Some(fmp) => fmp.quote_price(ticker).await,
-                None => Err(e),
-            },
+        if let Some(fmp) = &self.fmp {
+            if let Ok(p) = fmp.quote_price(ticker).await { return Ok(p); }
         }
+        self.yahoo.quote_price(ticker).await
     }
 
     /// Returns market caps (USD) for a batch of tickers, best-effort.

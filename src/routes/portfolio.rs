@@ -275,12 +275,14 @@ async fn fetch_performance(
         });
     }
 
-    // Fetch current prices concurrently via Yahoo (providers.quote_price).
+    // Fetch current prices concurrently — FMP primary, Yahoo fallback.
+    let providers = state.providers_with_server_fmp();
     let price_futs: Vec<_> = holdings_data
         .iter()
         .map(|h| {
             let ticker = h.ticker.clone();
-            async move { state.providers.quote_price(&ticker).await }
+            let providers = providers.clone();
+            async move { providers.quote_price(&ticker).await }
         })
         .collect();
     let current_prices: Vec<f64> = try_join_all(price_futs).await?;
@@ -556,13 +558,14 @@ pub async fn add_holding(
                     "Date must be in the past".into(),
                 ));
             }
-            let p = state.providers.price_on_date(&ticker, date).await?;
+            let providers = state.providers_with_server_fmp();
+            let p = providers.price_on_date(&ticker, date).await?;
             let ts = date.and_hms_opt(0, 0, 0)
                 .ok_or_else(|| AppError::BadRequest("Invalid date".into()))?
                 .and_utc();
             (p, ts)
         }
-        None => (state.providers.quote_price(&ticker).await?, Utc::now()),
+        None => (state.providers_with_server_fmp().quote_price(&ticker).await?, Utc::now()),
     };
 
     let row = sqlx::query(
@@ -702,7 +705,7 @@ pub async fn sell_holding(
             let p = if let Some(override_price) = body.price {
                 override_price
             } else {
-                state.providers.price_on_date(&ticker, date).await?
+                state.providers_with_server_fmp().price_on_date(&ticker, date).await?
             };
             let ts = date.and_hms_opt(0, 0, 0)
                 .ok_or_else(|| AppError::BadRequest("Invalid date".into()))?
@@ -713,7 +716,7 @@ pub async fn sell_holding(
             let p = if let Some(override_price) = body.price {
                 override_price
             } else {
-                state.providers.quote_price(&ticker).await?
+                state.providers_with_server_fmp().quote_price(&ticker).await?
             };
             (p, Utc::now())
         }
@@ -848,20 +851,21 @@ pub async fn import_holdings(
     }
 
     // ── 3. Fetch all prices concurrently ──────────────────────────────────────
-    let state_ref = &state;
+    let providers = state.providers_with_server_fmp();
     let price_futs: Vec<_> = valid_rows
         .iter()
         .map(|row| {
-            let ticker = row.ticker.clone();
-            let date   = row.date;
-            let p_ovr  = row.price_override;
+            let ticker    = row.ticker.clone();
+            let date      = row.date;
+            let p_ovr     = row.price_override;
+            let providers = providers.clone();
             async move {
                 if let Some(p) = p_ovr {
                     Ok(p)
                 } else if let Some(d) = date {
-                    state_ref.providers.price_on_date(&ticker, d).await
+                    providers.price_on_date(&ticker, d).await
                 } else {
-                    state_ref.providers.quote_price(&ticker).await
+                    providers.quote_price(&ticker).await
                 }
             }
         })
@@ -1067,13 +1071,14 @@ pub async fn get_community_portfolios(
             .collect()
     };
 
-    let state_ref = &state;
+    let providers = state.providers_with_server_fmp();
     let price_futs: Vec<_> = unique_tickers
         .iter()
         .map(|ticker| {
-            let ticker = ticker.clone();
+            let ticker    = ticker.clone();
+            let providers = providers.clone();
             async move {
-                let price = state_ref.providers.quote_price(&ticker).await.ok();
+                let price = providers.quote_price(&ticker).await.ok();
                 (ticker, price)
             }
         })

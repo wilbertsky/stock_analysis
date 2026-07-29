@@ -268,6 +268,43 @@ impl FmpClient {
         Ok(list)
     }
 
+    /// Returns the closing price on `date`, or the nearest prior trading day.
+    /// Uses a 7-day window on the same EOD endpoint as `price_history_for_chart`.
+    pub async fn price_on_date(
+        &self,
+        ticker: &str,
+        date: chrono::NaiveDate,
+    ) -> Result<f64, AppError> {
+        use chrono::Duration;
+        let from = (date - Duration::days(7)).format("%Y-%m-%d").to_string();
+        let to   = (date + Duration::days(1)).format("%Y-%m-%d").to_string();
+        let url  = format!("{}/historical-price-eod/light", self.base_url);
+        let list: Vec<HistoricalPrice> = self
+            .client
+            .get(&url)
+            .query(&[
+                ("symbol", ticker),
+                ("from", from.as_str()),
+                ("to", to.as_str()),
+                ("apikey", self.api_key.as_str()),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        // FMP returns newest-first; first entry whose date ≤ target is the nearest prior trading day.
+        list.into_iter()
+            .filter(|p| {
+                chrono::NaiveDate::parse_from_str(&p.date, "%Y-%m-%d")
+                    .map(|d| d <= date)
+                    .unwrap_or(false)
+            })
+            .filter_map(|p| p.price)
+            .next()
+            .ok_or(AppError::NotFound)
+    }
+
     /// Fetches daily closing prices for charting — up to `limit` days, newest-first.
     /// Unlike `historical_prices`, this does NOT inject `period=annual` (that param is
     /// for financial statement endpoints and can confuse the EOD price endpoint).

@@ -93,6 +93,7 @@ impl YahooClient {
             .into_iter()
             .zip(closes)
             .filter_map(|(ts, price)| {
+                let price = price?;
                 let date = Utc
                     .timestamp_opt(ts, 0)
                     .single()
@@ -162,6 +163,7 @@ impl YahooClient {
             .into_iter()
             .zip(closes)
             .filter_map(|(ts, price)| {
+                let price = price?;
                 let ts_date = Utc.timestamp_opt(ts, 0).single()?.date_naive();
                 if ts_date <= date { Some(price) } else { None }
             })
@@ -305,7 +307,7 @@ struct Indicators {
 
 #[derive(Deserialize)]
 struct AdjClose {
-    adjclose: Vec<f64>,
+    adjclose: Vec<Option<f64>>,
 }
 
 // ── News RSS types ────────────────────────────────────────────────────────────

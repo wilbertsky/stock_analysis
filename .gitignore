@@ -3,7 +3,14 @@
 
 # harness-kit — lifecycle scaffold (local only, not committed)
 .harness/
+.harness-adopt/
 .claude/
+AI-GUIDE.md
+CLAUDE.md
+.github/copilot-instructions.md
+docs/workflow.md
+docs/dev-map.md
+docs/tasks.md
+docs/spec/
 docs/features/
 evals/
-CLAUDE.md
