@@ -601,3 +601,46 @@ pub struct CompanyNewsResponse {
     pub ticker: String,
     pub items: Vec<NewsItem>,
 }
+
+// ── AI Portfolio ──────────────────────────────────────────────────────────────
+
+/// Per-holding view enriched with the AI's selection context.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AiHoldingDetail {
+    #[serde(flatten)]
+    pub performance: HoldingPerformance,
+    pub sector: Option<String>,
+    pub composite_score_at_selection: Option<f64>,
+    pub news_sentiment_at_selection: Option<String>,
+    pub selection_rationale: Option<String>,
+    pub cycle: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AiPortfolioResponse {
+    pub portfolio_id: Uuid,
+    pub name: String,
+    pub holdings: Vec<AiHoldingDetail>,
+    /// Weighted average unrealised return across all open holdings (%).
+    pub total_return_pct: Option<f64>,
+    /// Current market value of all holdings.
+    pub total_value: f64,
+    /// Total amount invested (cost basis across all holdings).
+    pub total_invested: f64,
+    /// Current quarter identifier, e.g. "2026-Q4".
+    pub current_cycle: String,
+    /// ISO date of the next scheduled review.
+    pub next_review: String,
+    pub quarterly_allocation: f64,
+    pub disclaimer: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AiRebalanceResponse {
+    pub cycle: String,
+    pub holdings_added: Vec<String>,
+    pub holdings_removed: Vec<String>,
+    pub holdings_held: Vec<String>,
+    pub total_deployed: f64,
+    pub portfolio_id: Uuid,
+}

@@ -104,6 +104,8 @@ impl Modify for BearerAuth {
         routes::portfolio::update_portfolio,
         routes::portfolio::get_public_portfolio,
         routes::portfolio::get_community_portfolios,
+        routes::ai_portfolio::get_ai_portfolio,
+        routes::ai_portfolio::post_rebalance,
     ),
     components(schemas(
         HealthResponse,
@@ -158,6 +160,9 @@ impl Modify for BearerAuth {
         UpdatePortfolioRequest,
         RealizedGainRow,
         RealizedGainsSummary,
+        AiHoldingDetail,
+        AiPortfolioResponse,
+        AiRebalanceResponse,
         routes::chat::ChatHistoryItem,
         routes::chat::ChatRequest,
         error::ErrorBody,
@@ -173,6 +178,7 @@ impl Modify for BearerAuth {
         (name = "chat", description = "AI chat proxy — forwards authenticated requests to the RAG service"),
         (name = "auth", description = "User accounts and authentication"),
         (name = "portfolio", description = "Portfolio management and performance tracking"),
+        (name = "ai-portfolio", description = "AI-managed auto-rebalancing portfolio"),
     )
 )]
 struct ApiDoc;
@@ -304,6 +310,8 @@ async fn main() {
         .routes(routes!(routes::feedback::submit_feedback))
         .routes(routes!(routes::feedback::list_feedback))
         .routes(routes!(routes::feedback::mark_read))
+        .routes(routes!(routes::ai_portfolio::get_ai_portfolio))
+        .routes(routes!(routes::ai_portfolio::post_rebalance))
         .with_state(state)
         .split_for_parts();
 

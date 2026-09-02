@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod ai_portfolio;
 pub mod auth;
 pub mod chat;
 pub mod discovery;
