@@ -534,10 +534,13 @@ pub async fn post_rebalance(
     let n_new = new_picks.len().min(MAX_HOLDINGS.saturating_sub(holdings_held.len()));
     let new_picks = &new_picks[..n_new];
 
+    // Always deploy the full quarterly allocation.
+    // New picks get priority; DCA into existing holdings when the portfolio is full and stable.
     let per_holding_allocation = if n_new > 0 {
         QUARTERLY_ALLOCATION / n_new as f64
     } else {
-        0.0
+        let n_held = holdings_held.len();
+        if n_held > 0 { QUARTERLY_ALLOCATION / n_held as f64 } else { 0.0 }
     };
 
     let providers = state.providers_with_server_fmp();
@@ -646,11 +649,43 @@ pub async fn post_rebalance(
         tracing::info!("Added {} to AI portfolio ({:.4} shares @ ${:.2})", pick.ticker, shares, current_price);
     }
 
+    // ── DCA into existing holdings when no new picks were made ───────────────
+    let mut holdings_dca: Vec<String> = Vec::new();
+    if n_new == 0 && per_holding_allocation > 0.0 {
+        for ticker in &holdings_held {
+            let current_price = match providers.quote_price(ticker).await {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("Could not price {ticker} for DCA: {e}");
+                    continue;
+                }
+            };
+
+            let shares = per_holding_allocation / current_price;
+
+            sqlx::query(
+                "INSERT INTO portfolio_holdings (portfolio_id, ticker, price_at_add, shares)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(portfolio_id)
+            .bind(ticker)
+            .bind(current_price)
+            .bind(shares)
+            .execute(&state.db)
+            .await?;
+
+            total_deployed += per_holding_allocation;
+            holdings_dca.push(ticker.clone());
+            tracing::info!("DCA {ticker} ({:.4} shares @ ${:.2})", shares, current_price);
+        }
+    }
+
     Ok(Json(AiRebalanceResponse {
         cycle,
         holdings_added,
         holdings_removed: to_remove,
         holdings_held,
+        holdings_dca,
         total_deployed,
         portfolio_id,
     }))

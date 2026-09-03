@@ -641,6 +641,8 @@ pub struct AiRebalanceResponse {
     pub holdings_added: Vec<String>,
     pub holdings_removed: Vec<String>,
     pub holdings_held: Vec<String>,
+    /// Tickers that received a DCA top-up this cycle (no new picks were needed).
+    pub holdings_dca: Vec<String>,
     pub total_deployed: f64,
     pub portfolio_id: Uuid,
 }
