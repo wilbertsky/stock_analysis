@@ -31,7 +31,7 @@ use uuid::Uuid;
 use crate::{
     error::AppError,
     models::{AiHoldingDetail, AiPortfolioResponse, AiRebalanceResponse, HoldingPerformance, HoldingRow},
-    routes::screener::{run_screener, DISCLAIMER},
+    routes::screener::{company_key, run_screener, DISCLAIMER},
     sectors,
     state::AppState,
 };
@@ -160,15 +160,22 @@ async fn select_candidates(state: &AppState) -> Vec<Candidate> {
         }
     }
 
+    // Build global ticker set for cross-sector company-key dedup (e.g. BRK-A/BRK-B
+    // appearing in different sectors — rare but possible with broad sector lists).
+    let all_tickers: HashSet<String> = by_sector.values().flatten()
+        .map(|c| c.ticker.clone()).collect();
+
     let mut selected: Vec<Candidate> = Vec::new();
     let mut selected_tickers: HashSet<String> = HashSet::new();
+    let mut selected_companies: HashSet<String> = HashSet::new();
     let mut per_sector_count: HashMap<String, usize> = HashMap::new();
 
     // Step 1 — guaranteed best-per-sector.
     for sector in sectors {
         if let Some(candidates) = by_sector.get(*sector) {
             if let Some(top) = candidates.first() {
-                if selected_tickers.insert(top.ticker.clone()) {
+                let co_key = company_key(&top.ticker, &all_tickers);
+                if selected_tickers.insert(top.ticker.clone()) && selected_companies.insert(co_key) {
                     *per_sector_count.entry(top.sector.clone()).or_insert(0) += 1;
                     selected.push(Candidate {
                         ticker: top.ticker.clone(),
@@ -200,10 +207,15 @@ async fn select_candidates(state: &AppState) -> Vec<Candidate> {
         if selected_tickers.contains(&c.ticker) {
             continue;
         }
+        let co_key = company_key(&c.ticker, &all_tickers);
+        if selected_companies.contains(&co_key) {
+            continue;
+        }
         if per_sector_count.get(&c.sector).copied().unwrap_or(0) >= MAX_PER_SECTOR {
             continue;
         }
         selected_tickers.insert(c.ticker.clone());
+        selected_companies.insert(co_key);
         *per_sector_count.entry(c.sector.clone()).or_insert(0) += 1;
         selected.push(Candidate {
             ticker: c.ticker.clone(),

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::{Duration, Instant}};
+use std::{collections::{HashMap, HashSet}, sync::Arc, time::{Duration, Instant}};
 
 use axum::{
     extract::{Path, State},
@@ -200,6 +200,25 @@ pub async fn run_screener(state: &AppState, sector: &str) -> Result<SectorScreen
         }
     }
 
+    // Deduplicate share classes of the same company (e.g. GOOG/GOOGL, MER/MER-PK).
+    // Keep the highest-scoring entry per company.
+    {
+        let ticker_set: HashSet<String> = results.iter().map(|e| e.ticker.clone()).collect();
+        let mut best: HashMap<String, ScreenerEntry> = HashMap::new();
+        for entry in results {
+            let key = company_key(&entry.ticker, &ticker_set);
+            match best.entry(key) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    if entry.composite_score > e.get().composite_score {
+                        e.insert(entry);
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(e) => { e.insert(entry); }
+            }
+        }
+        results = best.into_values().collect();
+    }
+
     results.sort_by(|a, b| {
         b.composite_score
             .partial_cmp(&a.composite_score)
@@ -216,6 +235,21 @@ pub async fn run_screener(state: &AppState, sector: &str) -> Result<SectorScreen
         results,
         disclaimer: DISCLAIMER.to_owned(),
     })
+}
+
+/// Returns a company-level deduplication key for a ticker.
+/// Strips hyphen suffixes (preferred/warrant shares: MER-PK → MER) and collapses
+/// share-class letter suffixes when the stripped base exists in the candidate set
+/// (GOOGL → GOOG when GOOG is also a candidate, BRKB → BRK when BRK.B present).
+pub(crate) fn company_key(ticker: &str, ticker_set: &HashSet<String>) -> String {
+    let base = ticker.split('-').next().unwrap_or(ticker);
+    if base.len() >= 5 {
+        let trimmed = &base[..base.len() - 1];
+        if ticker_set.contains(trimmed) {
+            return trimmed.to_owned();
+        }
+    }
+    base.to_owned()
 }
 
 /// Returns up to `SCORE_TOP_N` tickers sorted by market cap descending.
