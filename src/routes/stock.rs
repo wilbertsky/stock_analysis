@@ -624,6 +624,70 @@ pub async fn get_company_news(
     Ok(Json(CompanyNewsResponse { ticker: ticker.to_uppercase(), items }))
 }
 
+// ── Price series (DB-cached) ──────────────────────────────────────────────────
+
+/// How long cached EOD closes are served before re-fetching from FMP.
+const PRICE_CACHE_TTL_SECS: i64 = 12 * 3600;
+
+/// ~10 years of daily closes (newest-first), served from `price_history_cache` while
+/// fresh. On an FMP failure a stale row is served rather than an error.
+/// Cache read/write failures are logged and fall through to FMP.
+async fn price_series(
+    state: &AppState,
+    ticker: &str,
+) -> Result<Vec<crate::fmp::HistoricalPrice>, AppError> {
+    use sqlx::Row as _;
+
+    let cached = sqlx::query(
+        "SELECT data, EXTRACT(EPOCH FROM (NOW() - cached_at))::BIGINT AS age_secs \
+         FROM price_history_cache WHERE ticker = $1",
+    )
+    .bind(ticker)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(ticker, "price cache read failed: {e}");
+        None
+    })
+    .and_then(|row| {
+        let age: i64 = row.try_get("age_secs").ok()?;
+        let data: serde_json::Value = row.try_get("data").ok()?;
+        Some((age, serde_json::from_value::<Vec<crate::fmp::HistoricalPrice>>(data).ok()?))
+    });
+
+    if let Some((age, prices)) = &cached {
+        if *age < PRICE_CACHE_TTL_SECS && !prices.is_empty() {
+            return Ok(prices.clone());
+        }
+    }
+
+    match state.fmp.price_history_for_chart(ticker, 2600).await {
+        Ok(prices) => {
+            if let Ok(json) = serde_json::to_value(&prices) {
+                if let Err(e) = sqlx::query(
+                    "INSERT INTO price_history_cache (ticker, data, cached_at) VALUES ($1, $2, NOW()) \
+                     ON CONFLICT (ticker) DO UPDATE SET data = EXCLUDED.data, cached_at = NOW()",
+                )
+                .bind(ticker)
+                .bind(json)
+                .execute(&state.db)
+                .await
+                {
+                    tracing::warn!(ticker, "price cache write failed: {e}");
+                }
+            }
+            Ok(prices)
+        }
+        Err(e) => match cached {
+            Some((_, stale)) if !stale.is_empty() => {
+                tracing::warn!(ticker, "FMP price fetch failed, serving stale cache: {e}");
+                Ok(stale)
+            }
+            _ => Err(e),
+        },
+    }
+}
+
 // ── GET /api/stock/{ticker}/price-history ─────────────────────────────────────
 
 #[utoipa::path(
@@ -644,7 +708,7 @@ pub async fn get_price_history(
     Path(ticker): Path<String>,
 ) -> Result<Json<PriceHistoryResponse>, AppError> {
     let ticker = ticker.to_uppercase();
-    let raw = state.fmp.price_history_for_chart(&ticker, 2600).await?;
+    let raw = price_series(&state, &ticker).await?;
     let mut points: Vec<PricePoint> = raw
         .into_iter()
         .filter_map(|p| p.price.map(|price| PricePoint { date: p.date, price }))
@@ -685,7 +749,7 @@ pub async fn get_forecast(
     Query(q): Query<ForecastQuery>,
 ) -> Result<Json<crate::forecast::ForecastResponse>, AppError> {
     let ticker = ticker.to_uppercase();
-    let raw = state.fmp.price_history_for_chart(&ticker, 2600).await?;
+    let raw = price_series(&state, &ticker).await?;
     // FMP returns newest-first; the model wants chronological order.
     let (dates, closes): (Vec<String>, Vec<f64>) = raw
         .into_iter()

@@ -37,6 +37,7 @@ mod tests {
             .route("/api/portfolio/{id}/holdings/{hid}",
                 delete(routes::portfolio::remove_holding))
             .route("/api/portfolio/{id}",        get(routes::portfolio::get_portfolio))
+            .route("/api/stock/{ticker}/forecast", get(routes::stock::get_forecast))
             .with_state(state)
     }
 
@@ -510,5 +511,41 @@ mod tests {
         assert!(realized["total_realized_gain"].as_f64().unwrap() > 0.0);
         assert_eq!(realized["rows"].as_array().unwrap().len(), 1);
         assert_eq!(realized["rows"][0]["ticker"], "AMZN");
+    }
+
+    // ── Price history cache ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn forecast_fetches_prices_once_then_serves_from_db_cache() {
+        let mock = MockServer::start().await;
+        let ticker = format!("T{}", &Uuid::new_v4().simple().to_string()[..8]).to_uppercase();
+        // 300 newest-first closes with a little wiggle so volatility is non-zero.
+        let rows: Vec<Value> = (0..300)
+            .map(|i| serde_json::json!({
+                "symbol": ticker,
+                "date": format!("2024-01-{:02}-{i}", 1 + i % 28),
+                "price": 100.0 + (i as f64 * 0.7).sin() * 3.0,
+            }))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/historical-price-eod/light"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rows))
+            .expect(1) // second request must not reach FMP
+            .mount(&mock)
+            .await;
+
+        let state = setup(&mock.uri()).await;
+        let user_id = insert_user(&state, &format!("{}@test.example", Uuid::new_v4()), "pw").await;
+        let uri = format!("/api/stock/{ticker}/forecast?days=21");
+
+        for _ in 0..2 {
+            let (status, body) = send(build_router(state.clone()), "GET", &uri, Value::Null, Some(user_id)).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["bands"].as_array().unwrap().len(), 21);
+        }
+
+        sqlx::query("DELETE FROM price_history_cache WHERE ticker = $1")
+            .bind(&ticker).execute(&state.db).await.ok();
+        delete_user(&state, user_id).await;
     }
 }
