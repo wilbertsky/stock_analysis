@@ -58,7 +58,7 @@ pub async fn get_market_snapshot(
                 symbol: sym.to_string(),
                 name: name.to_string(),
                 price,
-                change_pct: q.changes_percentage.unwrap_or(0.0),
+                change_pct: q.change_percentage.unwrap_or(0.0),
                 change: q.change.unwrap_or(0.0),
             }),
             Err(e) => {

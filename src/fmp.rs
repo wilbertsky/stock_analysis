@@ -407,7 +407,7 @@ pub struct KeyMetrics {
 pub struct MarketQuoteFmp {
     pub symbol: String,
     #[serde(default)] pub price: Option<f64>,
-    #[serde(default)] pub changes_percentage: Option<f64>,
+    #[serde(default, alias = "changesPercentage")] pub change_percentage: Option<f64>,
     #[serde(default)] pub change: Option<f64>,
 }
 
@@ -470,4 +470,19 @@ where
         Some(serde_json::Value::String(s)) => s.replace(',', "").parse().ok(),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod quote_tests {
+    use super::MarketQuoteFmp;
+
+    #[test]
+    fn parses_stable_and_legacy_change_percent() {
+        let stable: MarketQuoteFmp =
+            serde_json::from_str(r#"{"symbol":"SPY","price":1.0,"changePercentage":-3.64}"#).unwrap();
+        assert_eq!(stable.change_percentage, Some(-3.64));
+        let legacy: MarketQuoteFmp =
+            serde_json::from_str(r#"{"symbol":"SPY","price":1.0,"changesPercentage":1.5}"#).unwrap();
+        assert_eq!(legacy.change_percentage, Some(1.5));
+    }
 }
