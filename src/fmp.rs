@@ -412,7 +412,7 @@ pub struct MarketQuoteFmp {
 }
 
 /// From /stable/historical-price-eod/light — daily closing prices, newest-first.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoricalPrice {
     pub date: String,
