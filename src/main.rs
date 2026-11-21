@@ -5,6 +5,7 @@ mod crypto;
 mod edgar;
 mod error;
 mod fmp;
+mod forecast;
 mod models;
 mod providers;
 mod routes;
@@ -78,6 +79,7 @@ impl Modify for BearerAuth {
         routes::stock::get_company_profile,
         routes::stock::get_company_news,
         routes::stock::get_price_history,
+        routes::stock::get_forecast,
         routes::market::get_market_snapshot,
         routes::screener::get_sector_top_picks,
         routes::discovery::get_discovery,
@@ -281,6 +283,7 @@ async fn main() {
         .routes(routes!(routes::stock::get_company_profile))
         .routes(routes!(routes::stock::get_company_news))
         .routes(routes!(routes::stock::get_price_history))
+        .routes(routes!(routes::stock::get_forecast))
         .routes(routes!(routes::market::get_market_snapshot))
         .routes(routes!(routes::screener::get_sector_top_picks))
         .routes(routes!(routes::discovery::get_discovery))

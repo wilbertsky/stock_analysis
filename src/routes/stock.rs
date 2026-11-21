@@ -653,3 +653,46 @@ pub async fn get_price_history(
     points.reverse();
     Ok(Json(PriceHistoryResponse { ticker, points }))
 }
+
+// ── GET /api/stock/{ticker}/forecast ──────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct ForecastQuery {
+    /// Trading days ahead (default 63 ≈ 3 months, max 252).
+    pub days: Option<usize>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/stock/{ticker}/forecast",
+    tag = "stock",
+    params(
+        ("ticker" = String, Path, description = "Ticker symbol"),
+        ("days" = Option<usize>, Query, description = "Trading days ahead (default 63, max 252)"),
+    ),
+    description = "Price-only probabilistic forecast: 68% / 95% range cone from an EWMA volatility \
+        estimate, plus a walk-forward calibration backtest. Forecasts a range, not a direction; \
+        independent of the fundamental analysis.",
+    responses(
+        (status = 200, description = "Forecast bands and backtest", body = crate::forecast::ForecastResponse),
+        (status = 404, description = "Not enough price history"),
+    )
+)]
+pub async fn get_forecast(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Path(ticker): Path<String>,
+    Query(q): Query<ForecastQuery>,
+) -> Result<Json<crate::forecast::ForecastResponse>, AppError> {
+    let ticker = ticker.to_uppercase();
+    let raw = state.fmp.price_history_for_chart(&ticker, 2600).await?;
+    // FMP returns newest-first; the model wants chronological order.
+    let (dates, closes): (Vec<String>, Vec<f64>) = raw
+        .into_iter()
+        .rev()
+        .filter_map(|p| p.price.map(|price| (p.date, price)))
+        .unzip();
+    crate::forecast::forecast(&ticker, &dates, &closes, q.days.unwrap_or(63))
+        .map(Json)
+        .ok_or(AppError::NotFound)
+}
